@@ -93,6 +93,8 @@ async def main():
         jid=settings.coordinator_jid,
         password=settings.coordinator_pass,
         verify_security=settings.verify_security,
+#        server=settings.xmpp_host,
+#        port=settings.xmpp_port,  
     )
     await a.start(auto_register=False)
     print("[Coordinator] started")
