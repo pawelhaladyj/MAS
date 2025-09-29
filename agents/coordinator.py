@@ -96,7 +96,7 @@ async def main():
 #        server=settings.xmpp_host,
 #        port=settings.xmpp_port,  
     )
-    await a.start(auto_register=False)
+    await a.start(auto_register=True)
     print("[Coordinator] started")
     while True:
         await asyncio.sleep(1)

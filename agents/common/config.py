@@ -5,13 +5,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseModel):
-    xmpp_domain: str = os.getenv("XMPP_DOMAIN", "localhost")
-    xmpp_host: str = os.getenv("XMPP_HOST", "127.0.0.1")
+    xmpp_domain: str = os.getenv("XMPP_DOMAIN", "xmpp.pawelhaladyj.pl")
+    xmpp_host: str = os.getenv("XMPP_HOST", "85.215.177.75")
     xmpp_port: int = int(os.getenv("XMPP_PORT", "5222"))
-    presenter_jid: str = os.getenv("XMPP_PRESENTER_JID", "presenter@localhost")
-    coordinator_jid: str = os.getenv("XMPP_COORDINATOR_JID", "coordinator@localhost")
+    presenter_jid: str = os.getenv("XMPP_PRESENTER_JID", "presenter@xmpp.pawelhaladyj.pl")
+    coordinator_jid: str = os.getenv("XMPP_COORDINATOR_JID", "coordinator@xmpp.pawelhaladyj.pl")
     presenter_pass: str = os.getenv("XMPP_PRESENTER_PASS","presenter")
     coordinator_pass: str = os.getenv("XMPP_COORDINATOR_PASS","coordinator")
-    verify_security: bool = os.getenv("VERIFY_SECURITY", "false").lower() == "true"
+    verify_security: bool = os.getenv("VERIFY_SECURITY", "true").lower() == "true"
     
 settings = Settings()
