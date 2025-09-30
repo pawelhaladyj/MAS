@@ -1,3 +1,5 @@
+from agents.common.kb import put_fact
+import os
 import json, asyncio
 from spade.agent import Agent
 from spade.behaviour import OneShotBehaviour, CyclicBehaviour
@@ -10,7 +12,8 @@ class PresenterAgent(Agent):
             # Start rozmowy: wyślij PING do Koordynatora
             msg = Message(to=settings.coordinator_jid)
             msg.set_metadata("performative", "REQUEST")
-            msg.body = json.dumps({"type": "PING", "session_id": "demo-1"})
+            session_id = os.getenv("CONV_ID", "demo-1")
+            msg.body = json.dumps({"type": "PING", "session_id": session_id})
             await self.send(msg)
             print("[Presenter] sent PING")
 
@@ -36,7 +39,7 @@ class PresenterAgent(Agent):
             elif t == "ASK":
                 # Koordynator prosi o uzupełnienie jednego brakującego slotu
                 need = data["need"][0]
-                session_id = data.get("session_id", "demo-1")
+                session_id = data.get("session_id", os.getenv("CONV_ID", "demo-1"))
 
                 # „Pytanie do człowieka” (na razie tylko log)
                 human_prompt = {
@@ -114,4 +117,13 @@ async def main():
         await asyncio.sleep(1)
 
 if __name__ == "__main__":
+    import os, asyncio
+
+    conv_id = os.getenv("CONV_ID", "demo-1")
+    try:
+        put_fact(conv_id, "healthcheck_presenter", {"ok": True})
+        print("[Presenter] healthcheck saved to KB")
+    except Exception as e:
+        print("[Presenter] KB healthcheck FAILED:", e)
+
     asyncio.run(main())

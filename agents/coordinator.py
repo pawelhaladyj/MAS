@@ -1,16 +1,33 @@
-import json, asyncio
+# agents/coordinator.py
+import json
+import asyncio
+from typing import Optional
+
 from spade.agent import Agent
 from spade.behaviour import CyclicBehaviour
 from spade.message import Message
+
 from agents.common.config import settings
-from agents.common.kb import kb, Fact
+from agents.common.kb import put_fact, get_fact, query_offers, add_offer
 from agents.common.slots import REQUIRED_SLOTS
 
+
+def add_fact(session_id: str, slot: str, value, source: str = "system"):
+    """Adapter na put_fact: zapisuje fakt do KB w standardowym formacie."""
+    if not isinstance(value, dict):
+        value = {"value": value}
+    value["source"] = source
+    put_fact(session_id, slot, value)
+
+
 def missing_slots(session_id: str):
-    """Zwraca listę brakujących slotów dla danej sesji."""
-    facts = kb.get_session(session_id)
-    got = {f.slot for f in facts}
-    return [s for s in REQUIRED_SLOTS if s not in got]
+    """Zwraca listę brakujących slotów (sprawdza każdy przez get_fact)."""
+    missing = []
+    for s in REQUIRED_SLOTS:
+        if get_fact(session_id, s) is None:
+            missing.append(s)
+    return missing
+
 
 class CoordinatorAgent(Agent):
     class Inbox(CyclicBehaviour):
@@ -32,8 +49,7 @@ class CoordinatorAgent(Agent):
             if t == "PING":
                 # Zapisz handshake do KB
                 session_id = data.get("session_id", "s-unk")
-                kb.add(Fact(session_id=session_id, slot="handshake",
-                            value="received", source="presenter"))
+                add_fact(session_id, "handshake", "received", source="presenter")
 
                 # ACK jak wcześniej
                 reply = Message(to=str(msg.sender))
@@ -52,7 +68,8 @@ class CoordinatorAgent(Agent):
                         "session_id": session_id,
                     })
                     await self.send(ask)
-                    print(f"[Coordinator] facts={len(kb.get_session(session_id))} missing={len(need)}")
+                    available = [s for s in REQUIRED_SLOTS if get_fact(session_id, s) is not None]
+                    print(f"[Coordinator] facts={len(available)} missing={len(need)}")
 
             elif t == "FACT":
                 # Zapisz fakt od użytkownika do KB
@@ -62,7 +79,7 @@ class CoordinatorAgent(Agent):
                 source = data.get("source", "user")
 
                 if slot is not None:
-                    kb.add(Fact(session_id=session_id, slot=slot, value=value, source=source))
+                    add_fact(session_id, slot, value, source=source)
 
                 # Ponownie policz braki – dopytaj lub zakończ
                 need = missing_slots(session_id)
@@ -75,31 +92,43 @@ class CoordinatorAgent(Agent):
                         "session_id": session_id,
                     })
                     await self.send(ask)
-                    print(f"[Coordinator] facts={len(kb.get_session(session_id))} missing={len(need)}")
+                    available = [s for s in REQUIRED_SLOTS if get_fact(session_id, s) is not None]
+                    print(f"[Coordinator] facts={len(available)} missing={len(need)}")
                 else:
                     print(f"[Coordinator] All required slots collected for {session_id}.")
-                    # tu w kolejnych etapach wyślesz cele do specjalistów (flights/hotels/weather/ranker)
+                    # MOCK: zapisz przykładową ofertę do KB
+                    add_offer(
+                        session_id,
+                        provider="mock-hotel",
+                        offer={"hotel": "Aqua Palace", "city": "Hurghada", "stars": 5, "board": "AI", "price_pln": 9999},
+                        score=0.95,
+                    )
+                    # pokaż top oferty z KB
+                    top = query_offers(session_id)
+                    print(f"[Coordinator] top offers -> {top[:1]}")
 
             else:
-                # inne typy na później
+                # Inne typy na później
                 pass
 
     async def setup(self):
         print("[Coordinator] starting")
         self.add_behaviour(self.Inbox())
 
+
 async def main():
     a = CoordinatorAgent(
         jid=settings.coordinator_jid,
         password=settings.coordinator_pass,
         verify_security=settings.verify_security,
-#        server=settings.xmpp_host,
-#        port=settings.xmpp_port,  
+        # server=settings.xmpp_host,
+        # port=settings.xmpp_port,
     )
     await a.start(auto_register=True)
     print("[Coordinator] started")
     while True:
         await asyncio.sleep(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

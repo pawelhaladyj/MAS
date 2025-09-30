@@ -42,4 +42,21 @@ def query_offers(conversation_id: str):
             {"provider": r["provider"], "offer": dict(r["offer"]), "score": r["score"]}
             for r in cur.fetchall()
         ]
-PY
+        
+def list_facts(conversation_id: str):
+    """Zwróć listę (slot, value, created_at) dla danej sesji."""
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute(
+            "SELECT slot, value, created_at FROM facts WHERE conversation_id=%s ORDER BY created_at",
+            (conversation_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    
+def add_offer(conversation_id: str, provider: str, offer: dict, score: float | None = None):
+    """Dodaj ofertę do tabeli offers."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO offers (conversation_id, provider, offer, score) VALUES (%s, %s, %s, %s)",
+            (conversation_id, provider, psycopg2.extras.Json(offer), score),
+        )
+        conn.commit()
