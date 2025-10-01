@@ -98,12 +98,7 @@ class CoordinatorAgent(Agent):
                         payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
                         ontology="default",
                     )
-                    reply = Message(to=str(msg.sender))
-                    reply.set_metadata("performative", confirm_acl.performative.value)
-                    reply.set_metadata("conversation_id", confirm_acl.conversation_id)
-                    reply.set_metadata("ontology", confirm_acl.ontology)
-                    reply.set_metadata("language", confirm_acl.language)
-                    reply.body = confirm_acl.to_json()
+                    reply = to_spade_message(confirm_acl, to_jid=str(msg.sender))
                     await self.send(reply)
                     print(f"[Coordinator] confirmed FACT for slot='{slot}'")
 
