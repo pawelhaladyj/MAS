@@ -1,6 +1,4 @@
-try:
-    from agents.common.slots import REQUIRED_SLOTS
-    print("REQUIRED_SLOTS len =", len(REQUIRED_SLOTS))
-    print("first 5:", REQUIRED_SLOTS[:5])
-except Exception as e:
-    print("IMPORT ERROR:", e)
+from agents.protocol.acl_messages import AclMessage, Performative
+msg = AclMessage.build_request("demo-1", {"type": "PING"})
+print("OK performative:", msg.performative)
+print("OK json:", msg.to_json())
