@@ -76,6 +76,20 @@ class CoordinatorAgent(Agent):
                 ask.body = ask_acl.to_json()
                 await self.send(ask)
                 print("[Coordinator] asked for slot: budget_total")
+                
+            # 3) NOWE: odbiór FACT (ACL)
+            elif acl_in.payload.get("type") == "FACT":
+                slot = acl_in.payload.get("slot")
+                value = acl_in.payload.get("value")
+                source = acl_in.payload.get("source", "user")
+                conv_id = acl_in.conversation_id  # sesja z nagłówka ACL
+
+                try:
+                    # zapis do KB: kluczem jest nazwa slotu, wartością słownik z value/source
+                    put_fact(conv_id, slot, {"value": value, "source": source})
+                    print(f"[Coordinator] FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
+                except Exception as e:
+                    print(f"[Coordinator] KB write FAILED for slot='{slot}':", e)
 
     async def setup(self):
         print("[Coordinator] starting")
