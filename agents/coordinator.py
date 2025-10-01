@@ -61,7 +61,21 @@ class CoordinatorAgent(Agent):
 
                 await self.send(reply)
                 print("[Coordinator] acked PING")
-
+                
+                # Testowe ASK: prosimy o jeden slot (np. budget_total)
+                ask_acl = AclMessage.build_request(
+                    conversation_id=acl_in.conversation_id,
+                    payload={"type": "ASK", "need": ["budget_total"], "session_id": acl_in.conversation_id},
+                    ontology=acl_in.ontology,
+                )
+                ask = Message(to=str(msg.sender))
+                ask.set_metadata("performative", ask_acl.performative.value)
+                ask.set_metadata("conversation_id", ask_acl.conversation_id)
+                ask.set_metadata("ontology", ask_acl.ontology)
+                ask.set_metadata("language", ask_acl.language)
+                ask.body = ask_acl.to_json()
+                await self.send(ask)
+                print("[Coordinator] asked for slot: budget_total")
 
     async def setup(self):
         print("[Coordinator] starting")
