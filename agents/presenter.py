@@ -6,23 +6,20 @@ from spade.behaviour import OneShotBehaviour, CyclicBehaviour
 from spade.message import Message
 from agents.common.config import settings
 from agents.protocol.acl_messages import AclMessage, Performative
+from agents.protocol.spade_utils import to_spade_message
 
 class PresenterAgent(Agent):
     class Kickoff(OneShotBehaviour):
         async def run(self):
-            # Start rozmowy: wyślij PING do Koordynatora
+            # 1) Budujemy ACL (bez SPADE Message)
             acl = AclMessage.build_request(
                 conversation_id="demo-1",
-                payload={"type": "PING"}
+                payload={"type": "PING"},
+                ontology="default",  # opcjonalnie jawnie
             )
 
-            msg = Message(to=settings.coordinator_jid)
-            msg.set_metadata("performative", acl.performative.value)
-            msg.set_metadata("conversation_id", acl.conversation_id)
-            msg.set_metadata("ontology", acl.ontology)  # zostaje "default", ale jawnie
-            msg.set_metadata("language", acl.language)  # zostaje "json", ale jawnie
-            msg.body = acl.to_json()
-
+            # 2) Dopiero teraz tworzymy SPADE Message z ACL
+            msg = to_spade_message(acl, to_jid=settings.coordinator_jid)
             await self.send(msg)
             print("[Presenter] sent PING (ACL)")
 
@@ -106,22 +103,10 @@ class PresenterAgent(Agent):
                 # Odpowiedz FACT do Koordynatora (slot→value) — TERAZ w ACL
                 fact_acl = AclMessage.build_inform(
                     conversation_id=session_id,
-                    payload={
-                        "type": "FACT",
-                        "slot": need,
-                        "value": value,
-                        "source": "user",
-                    },
+                    payload={"type": "FACT","slot": need,"value": value,"source": "user"},
                     ontology="default",
                 )
-
-                reply = Message(to=settings.coordinator_jid)
-                reply.set_metadata("performative", fact_acl.performative.value)
-                reply.set_metadata("conversation_id", fact_acl.conversation_id)
-                reply.set_metadata("ontology", fact_acl.ontology)
-                reply.set_metadata("language", fact_acl.language)
-                reply.body = fact_acl.to_json()
-
+                reply = to_spade_message(fact_acl, to_jid=settings.coordinator_jid)
                 await self.send(reply)
                 print(f"[Presenter] sent FACT (ACL) slot='{need}' value='{value}'")
 
