@@ -63,12 +63,7 @@ class CoordinatorAgent(Agent):
                     payload={"type": "ASK", "need": ["budget_total"], "session_id": acl_in.conversation_id},
                     ontology=acl_in.ontology,
                 )
-                ask = Message(to=str(msg.sender))
-                ask.set_metadata("performative", ask_acl.performative.value)
-                ask.set_metadata("conversation_id", ask_acl.conversation_id)
-                ask.set_metadata("ontology", ask_acl.ontology)
-                ask.set_metadata("language", ask_acl.language)
-                ask.body = ask_acl.to_json()
+                ask = to_spade_message(ask_acl, to_jid=str(msg.sender))
                 await self.send(ask)
                 print("[Coordinator] asked for slot: budget_total")
                 
