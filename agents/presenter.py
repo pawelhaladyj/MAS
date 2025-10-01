@@ -1,6 +1,6 @@
 from agents.common.kb import put_fact
 import os
-import json, asyncio
+import asyncio
 from spade.agent import Agent
 from spade.behaviour import OneShotBehaviour, CyclicBehaviour
 from spade.message import Message

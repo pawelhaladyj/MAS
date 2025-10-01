@@ -1,5 +1,4 @@
 # agents/coordinator.py
-import json
 import asyncio
 from typing import Optional
 
