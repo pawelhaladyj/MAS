@@ -1,110 +1,59 @@
-# agents/coordinator.py
 import asyncio
-from typing import Optional
 
-from spade.agent import Agent
-from spade.behaviour import CyclicBehaviour
-from spade.message import Message
-
+from agents.agent import BaseAgent
+from agents.common.kb import put_fact
 from agents.common.config import settings
-from agents.common.kb import put_fact, get_fact, query_offers, add_offer
-from agents.common.slots import REQUIRED_SLOTS
 from agents.protocol.acl_messages import AclMessage
-from agents.protocol.spade_utils import to_spade_message
-from agents.protocol.guards import meta_language_is_json, acl_language_is_json
 
 
+class CoordinatorAgent(BaseAgent):
+    async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+        payload = acl.payload or {}
+        ptype = payload.get("type")
 
-def add_fact(session_id: str, slot: str, value, source: str = "system"):
-    """Adapter na put_fact: zapisuje fakt do KB w standardowym formacie."""
-    if not isinstance(value, dict):
-        value = {"value": value}
-    value["source"] = source
-    put_fact(session_id, slot, value)
+        if ptype == "PING":
+            # ACK
+            ack = AclMessage.build_inform(
+                conversation_id=acl.conversation_id,
+                payload={"type": "ACK", "echo": payload},
+                ontology=acl.ontology,
+            )
+            await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
+            self.log("acked PING")
 
+            # ASK o budżet (przykład)
+            ask = AclMessage.build_request(
+                conversation_id=acl.conversation_id,
+                payload={"type": "ASK", "need": ["budget_total"], "session_id": acl.conversation_id},
+                ontology=acl.ontology,
+            )
+            await self.send_acl(behaviour, ask, to_jid=str(spade_msg.sender))
+            self.log("asked for slot: budget_total")
+            return
 
-def missing_slots(session_id: str):
-    """Zwraca listę brakujących slotów (sprawdza każdy przez get_fact)."""
-    missing = []
-    for s in REQUIRED_SLOTS:
-        if get_fact(session_id, s) is None:
-            missing.append(s)
-    return missing
-
-
-class CoordinatorAgent(Agent):
-    class Inbox(CyclicBehaviour):
-        async def run(self):
-            msg = await self.receive(timeout=5)
-            if not msg:
-                return
-            
-            # [3.13 / 2b] Wymuś JSON w metadanych SPADE (jeśli nagłówek istnieje)
-            if not meta_language_is_json(msg):
-                lang_meta = msg.metadata.get("language") if hasattr(msg, "metadata") else None
-                print(f"[Coordinator][WARN] unsupported meta.language='{lang_meta}', drop")
-                return
+        if ptype == "FACT":
+            slot = payload.get("slot")
+            value = payload.get("value")
+            source = payload.get("source", "user")
+            conv_id = acl.conversation_id
 
             try:
-                acl_in = AclMessage.from_json(msg.body)
-                print("[Coordinator] ACL IN:", acl_in.model_dump())  # lub .dict() przy v1 fallback
+                put_fact(conv_id, slot, {"value": value, "source": source})
+                self.log(f"FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
+
+                confirm = AclMessage.build_inform(
+                    conversation_id=conv_id,
+                    payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
+                    ontology=acl.ontology or "default",
+                )
+                await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
+                self.log(f"confirmed FACT for slot='{slot}'")
             except Exception as e:
-                print(f"[Coordinator][ERR] invalid ACL: {e}")
-                return
-            
-            # [3.13 / 2c] Wymuś JSON w polu language obiektu ACL
-            if not acl_language_is_json(acl_in):
-                print(f"[Coordinator][WARN] unsupported ACL.language='{acl_in.language}', drop")
-                return
+                self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
+            return
 
-            # NOWE: jeśli to PING, odsyłamy ACK w ACL
-            if acl_in.payload.get("type") == "PING":
-                acl_out = AclMessage.build_inform(
-                    conversation_id=acl_in.conversation_id,
-                    payload={"type": "ACK", "echo": acl_in.payload},
-                    ontology=acl_in.ontology,
-                )
-                reply = to_spade_message(acl_out, to_jid=str(msg.sender))
-                await self.send(reply)
-                print("[Coordinator] acked PING")
-                
-                # Testowe ASK: prosimy o jeden slot (np. budget_total)
-                ask_acl = AclMessage.build_request(
-                    conversation_id=acl_in.conversation_id,
-                    payload={"type": "ASK", "need": ["budget_total"], "session_id": acl_in.conversation_id},
-                    ontology=acl_in.ontology,
-                )
-                ask = to_spade_message(ask_acl, to_jid=str(msg.sender))
-                await self.send(ask)
-                print("[Coordinator] asked for slot: budget_total")
-                
-            # 3) NOWE: odbiór FACT (ACL)
-            elif acl_in.payload.get("type") == "FACT":
-                slot = acl_in.payload.get("slot")
-                value = acl_in.payload.get("value")
-                source = acl_in.payload.get("source", "user")
-                conv_id = acl_in.conversation_id  # sesja z nagłówka ACL
-
-                try:
-                    # zapis do KB: kluczem jest nazwa slotu, wartością słownik z value/source
-                    put_fact(conv_id, slot, {"value": value, "source": source})
-                    print(f"[Coordinator] FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
-                    # Wyślij krótkie potwierdzenie w ACL (CONFIRM)
-                    confirm_acl = AclMessage.build_inform(
-                        conversation_id=conv_id,
-                        payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
-                        ontology="default",
-                    )
-                    reply = to_spade_message(confirm_acl, to_jid=str(msg.sender))
-                    await self.send(reply)
-                    print(f"[Coordinator] confirmed FACT for slot='{slot}'")
-
-                except Exception as e:
-                    print(f"[Coordinator][ERR] KB write FAILED for slot='{slot}': {e}")
-
-    async def setup(self):
-        print("[Coordinator] starting")
-        self.add_behaviour(self.Inbox())
+        # Inne typy — dyscyplina: tylko log.
+        self.log(f"OTHER payload: {payload}")
 
 
 async def main():
@@ -115,10 +64,8 @@ async def main():
         # server=settings.xmpp_host,
         # port=settings.xmpp_port,
     )
-    await a.start(auto_register=True)
-    print("[Coordinator] started")
-    while True:
-        await asyncio.sleep(1)
+    a.write_kb_health()
+    await BaseAgent.run_forever(a)
 
 
 if __name__ == "__main__":
