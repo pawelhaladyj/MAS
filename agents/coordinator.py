@@ -37,12 +37,27 @@ class CoordinatorAgent(Agent):
             msg = await self.receive(timeout=5)
             if not msg:
                 return
+            
+            # [3.13 / 2b] Wymuś JSON w metadanych SPADE (jeśli nagłówek istnieje)
+            lang_meta = None
+            try:
+                lang_meta = msg.metadata.get("language") if hasattr(msg, "metadata") else None
+            except Exception:
+                lang_meta = None
+            if lang_meta and str(lang_meta).lower() != "json":
+                print(f"[Coordinator][WARN] unsupported meta.language='{lang_meta}', drop")
+                return
 
             try:
                 acl_in = AclMessage.from_json(msg.body)
                 print("[Coordinator] ACL IN:", acl_in.model_dump())  # lub .dict() przy v1 fallback
             except Exception as e:
-                print("[Coordinator] invalid ACL:", e)
+                print(f"[Coordinator][ERR] invalid ACL: {e}")
+                return
+            
+            # [3.13 / 2c] Wymuś JSON w polu language obiektu ACL
+            if str(acl_in.language).lower() != "json":
+                print(f"[Coordinator][WARN] unsupported ACL.language='{acl_in.language}', drop")
                 return
 
             # NOWE: jeśli to PING, odsyłamy ACK w ACL
@@ -93,7 +108,7 @@ class CoordinatorAgent(Agent):
                     print(f"[Coordinator] confirmed FACT for slot='{slot}'")
 
                 except Exception as e:
-                    print(f"[Coordinator] KB write FAILED for slot='{slot}':", e)
+                    print(f"[Coordinator][ERR] KB write FAILED for slot='{slot}': {e}")
 
     async def setup(self):
         print("[Coordinator] starting")
