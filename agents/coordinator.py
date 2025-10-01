@@ -39,10 +39,29 @@ class CoordinatorAgent(Agent):
 
             try:
                 acl_in = AclMessage.from_json(msg.body)
-                print("[Coordinator] ACL IN:", acl_in.model_dump())
+                print("[Coordinator] ACL IN:", acl_in.model_dump())  # lub .dict() przy v1 fallback
             except Exception as e:
                 print("[Coordinator] invalid ACL:", e)
                 return
+
+            # NOWE: jeśli to PING, odsyłamy ACK w ACL
+            if acl_in.payload.get("type") == "PING":
+                acl_out = AclMessage.build_inform(
+                    conversation_id=acl_in.conversation_id,
+                    payload={"type": "ACK", "echo": acl_in.payload},
+                    ontology=acl_in.ontology,
+                )
+
+                reply = Message(to=str(msg.sender))
+                reply.set_metadata("performative", acl_out.performative.value)
+                reply.set_metadata("conversation_id", acl_out.conversation_id)
+                reply.set_metadata("ontology", acl_out.ontology)
+                reply.set_metadata("language", acl_out.language)
+                reply.body = acl_out.to_json()
+
+                await self.send(reply)
+                print("[Coordinator] acked PING")
+
 
     async def setup(self):
         print("[Coordinator] starting")
