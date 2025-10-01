@@ -125,6 +125,10 @@ class PresenterAgent(Agent):
                 await self.send(reply)
                 print(f"[Presenter] sent FACT (ACL) slot='{need}' value='{value}'")
 
+            elif t == "CONFIRM":
+                slot = payload.get("slot")
+                status = payload.get("status")
+                print(f"[Presenter] CONFIRM: slot='{slot}' status='{status}'")
 
             else:
                 # Inne typy zaloguj z payload
