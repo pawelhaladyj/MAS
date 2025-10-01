@@ -88,6 +88,21 @@ class CoordinatorAgent(Agent):
                     # zapis do KB: kluczem jest nazwa slotu, wartością słownik z value/source
                     put_fact(conv_id, slot, {"value": value, "source": source})
                     print(f"[Coordinator] FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
+                    # Wyślij krótkie potwierdzenie w ACL (CONFIRM)
+                    confirm_acl = AclMessage.build_inform(
+                        conversation_id=conv_id,
+                        payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
+                        ontology="default",
+                    )
+                    reply = Message(to=str(msg.sender))
+                    reply.set_metadata("performative", confirm_acl.performative.value)
+                    reply.set_metadata("conversation_id", confirm_acl.conversation_id)
+                    reply.set_metadata("ontology", confirm_acl.ontology)
+                    reply.set_metadata("language", confirm_acl.language)
+                    reply.body = confirm_acl.to_json()
+                    await self.send(reply)
+                    print(f"[Coordinator] confirmed FACT for slot='{slot}'")
+
                 except Exception as e:
                     print(f"[Coordinator] KB write FAILED for slot='{slot}':", e)
 
