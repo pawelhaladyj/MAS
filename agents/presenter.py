@@ -32,23 +32,36 @@ class PresenterAgent(Agent):
             if not msg:
                 return
 
-            # Bezpieczne parsowanie JSON
+            # Parsowanie ACL z fallbackiem na Pydantic v1
             try:
-                data = json.loads(msg.body)
+                try:
+                    acl = AclMessage.from_json(msg.body)  # Pydantic v2
+                except AttributeError:
+                    import json as _json
+                    acl = AclMessage(**_json.loads(msg.body))  # Pydantic v1
+
+                try:
+                    dump = acl.model_dump()   # v2
+                except AttributeError:
+                    dump = acl.dict()         # v1
+
+                print("[Presenter] ACL IN:", dump)
             except Exception as e:
-                print(f"[Presenter] bad json: {e}; body={msg.body!r}")
+                print(f"[Presenter] invalid ACL: {e}; body={msg.body!r}")
                 return
 
-            t = data.get("type")
+            # Od tej chwili używamy wyłącznie payload z ACL:
+            payload = acl.payload
+            t = payload.get("type")
 
             if t == "ACK":
                 # Potwierdzenie od Koordynatora
-                print(f"[Presenter] got:", data)
+                print("[Presenter] ACK:", payload)
 
             elif t == "ASK":
                 # Koordynator prosi o uzupełnienie jednego brakującego slotu
-                need = data["need"][0]
-                session_id = data.get("session_id", os.getenv("CONV_ID", "demo-1"))
+                need = payload["need"][0]
+                session_id = payload.get("session_id", os.getenv("CONV_ID", "demo-1"))
 
                 # „Pytanie do człowieka” (na razie tylko log)
                 human_prompt = {
@@ -91,6 +104,8 @@ class PresenterAgent(Agent):
                 value = mock_values.get(need, "TODO")
 
                 # Odpowiedz FACT do Koordynatora (slot→value)
+                # (Na tym etapie zostawiamy ciało jako JSON — integrację pełnego ACL na wyjściu
+                #  zrobimy w jednym z kolejnych małych kroków.)
                 reply = Message(to=settings.coordinator_jid)
                 reply.set_metadata("performative", "INFORM")
                 reply.body = json.dumps({
@@ -104,8 +119,9 @@ class PresenterAgent(Agent):
                 print(f"[Presenter] sent FACT for slot='{need}' value='{value}'")
 
             else:
-                # Inne typy można zalogować
-                print(f"[Presenter] got:", data)
+                # Inne typy zaloguj z payload
+                print("[Presenter] OTHER:", payload)
+
 
     async def setup(self):
         print("[Presenter] starting")
