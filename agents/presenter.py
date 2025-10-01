@@ -7,6 +7,8 @@ from spade.message import Message
 from agents.common.config import settings
 from agents.protocol.acl_messages import AclMessage, Performative
 from agents.protocol.spade_utils import to_spade_message
+from agents.protocol.guards import meta_language_is_json, acl_language_is_json
+
 
 class PresenterAgent(Agent):
     class Kickoff(OneShotBehaviour):
@@ -29,13 +31,9 @@ class PresenterAgent(Agent):
             if not msg:
                 return
 
-            # [3.13 / 1b] Wymuś JSON w metadanych SPADE (jeśli nagłówek istnieje)
-            lang_meta = None
-            try:
+            # [3.17] DRY: użyj helpera
+            if not meta_language_is_json(msg):
                 lang_meta = msg.metadata.get("language") if hasattr(msg, "metadata") else None
-            except Exception:
-                lang_meta = None
-            if lang_meta and str(lang_meta).lower() != "json":
                 print(f"[Presenter][WARN] unsupported meta.language='{lang_meta}', drop")
                 return
 
@@ -57,8 +55,8 @@ class PresenterAgent(Agent):
                 print(f"[Presenter][ERR] invalid ACL: {e}; body={msg.body!r}")
                 return
 
-            # [3.13 / 1c] Wymuś JSON w polu language obiektu ACL
-            if str(acl.language).lower() != "json":
+            # [3.17] DRY: użyj helpera
+            if not acl_language_is_json(acl):
                 print(f"[Presenter][WARN] unsupported ACL.language='{acl.language}', drop")
                 return
 
