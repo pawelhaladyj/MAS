@@ -11,6 +11,8 @@ from agents.common.config import settings
 from agents.common.kb import put_fact, get_fact, query_offers, add_offer
 from agents.common.slots import REQUIRED_SLOTS
 from agents.protocol.acl_messages import AclMessage
+from agents.protocol.spade_utils import to_spade_message
+
 
 
 def add_fact(session_id: str, slot: str, value, source: str = "system"):
@@ -51,14 +53,7 @@ class CoordinatorAgent(Agent):
                     payload={"type": "ACK", "echo": acl_in.payload},
                     ontology=acl_in.ontology,
                 )
-
-                reply = Message(to=str(msg.sender))
-                reply.set_metadata("performative", acl_out.performative.value)
-                reply.set_metadata("conversation_id", acl_out.conversation_id)
-                reply.set_metadata("ontology", acl_out.ontology)
-                reply.set_metadata("language", acl_out.language)
-                reply.body = acl_out.to_json()
-
+                reply = to_spade_message(acl_out, to_jid=str(msg.sender))
                 await self.send(reply)
                 print("[Coordinator] acked PING")
                 
