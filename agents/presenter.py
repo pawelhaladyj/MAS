@@ -5,17 +5,26 @@ from spade.agent import Agent
 from spade.behaviour import OneShotBehaviour, CyclicBehaviour
 from spade.message import Message
 from agents.common.config import settings
+from agents.protocol.acl_messages import AclMessage, Performative
 
 class PresenterAgent(Agent):
     class Kickoff(OneShotBehaviour):
         async def run(self):
             # Start rozmowy: wyślij PING do Koordynatora
+            acl = AclMessage.build_request(
+                conversation_id="demo-1",
+                payload={"type": "PING"}
+            )
+
             msg = Message(to=settings.coordinator_jid)
-            msg.set_metadata("performative", "REQUEST")
-            session_id = os.getenv("CONV_ID", "demo-1")
-            msg.body = json.dumps({"type": "PING", "session_id": session_id})
+            msg.set_metadata("performative", acl.performative.value)
+            msg.set_metadata("conversation_id", acl.conversation_id)
+            msg.set_metadata("ontology", acl.ontology)  # zostaje "default", ale jawnie
+            msg.set_metadata("language", acl.language)  # zostaje "json", ale jawnie
+            msg.body = acl.to_json()
+
             await self.send(msg)
-            print("[Presenter] sent PING")
+            print("[Presenter] sent PING (ACL)")
 
     class Inbox(CyclicBehaviour):
         async def run(self):
