@@ -103,20 +103,28 @@ class PresenterAgent(Agent):
                 }
                 value = mock_values.get(need, "TODO")
 
-                # Odpowiedz FACT do Koordynatora (slot→value)
-                # (Na tym etapie zostawiamy ciało jako JSON — integrację pełnego ACL na wyjściu
-                #  zrobimy w jednym z kolejnych małych kroków.)
+                # Odpowiedz FACT do Koordynatora (slot→value) — TERAZ w ACL
+                fact_acl = AclMessage.build_inform(
+                    conversation_id=session_id,
+                    payload={
+                        "type": "FACT",
+                        "slot": need,
+                        "value": value,
+                        "source": "user",
+                    },
+                    ontology="default",
+                )
+
                 reply = Message(to=settings.coordinator_jid)
-                reply.set_metadata("performative", "INFORM")
-                reply.body = json.dumps({
-                    "type": "FACT",
-                    "session_id": session_id,
-                    "slot": need,
-                    "value": value,
-                    "source": "user",
-                })
+                reply.set_metadata("performative", fact_acl.performative.value)
+                reply.set_metadata("conversation_id", fact_acl.conversation_id)
+                reply.set_metadata("ontology", fact_acl.ontology)
+                reply.set_metadata("language", fact_acl.language)
+                reply.body = fact_acl.to_json()
+
                 await self.send(reply)
-                print(f"[Presenter] sent FACT for slot='{need}' value='{value}'")
+                print(f"[Presenter] sent FACT (ACL) slot='{need}' value='{value}'")
+
 
             else:
                 # Inne typy zaloguj z payload
