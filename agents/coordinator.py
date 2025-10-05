@@ -5,7 +5,7 @@ from collections import deque
 from agents.agent import BaseAgent
 from agents.common.kb import put_fact
 from agents.common.config import settings
-from agents.protocol.acl_messages import AclMessage, Performative 
+from agents.protocol.acl_messages import AclMessage
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
 from agents.common.slots import CANONICAL_SLOTS
@@ -97,27 +97,14 @@ class CoordinatorAgent(BaseAgent):
                 put_fact(conv_id, slot, {"value": value, "source": source})
                 self.log(f"FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
 
-                try:
-                    # preferowany builder
-                    confirm = AclMessage.build_inform_confirm(
-                        conversation_id=conv_id,
-                        slot=slot,
-                        status="saved",
-                        ontology=acl.ontology or "default",
-                    )
-                except Exception as e:
-                    # fallback na stary sposób (zachowuje dotychczasowe zachowanie)
-                    self.log(f"[warn] build_inform_confirm failed: {e!r} – falling back to build_inform")
-                    confirm = AclMessage.build_inform(
-                        conversation_id=conv_id,
-                        payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
-                        ontology=acl.ontology or "default",
-                    )
-
+                confirm = AclMessage.build_inform(
+                    conversation_id=conv_id,
+                    payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
+                    ontology=acl.ontology or "default",
+                )
                 await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
                 self.log(f"confirmed FACT for slot='{slot}'")
 
-                
             except Exception as e:
                 self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
             return
