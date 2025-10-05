@@ -5,9 +5,10 @@ from collections import deque
 from agents.agent import BaseAgent
 from agents.common.kb import put_fact
 from agents.common.config import settings
-from agents.protocol.acl_messages import AclMessage
+from agents.protocol.acl_messages import AclMessage, Performative 
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
+from agents.common.slots import CANONICAL_SLOTS
 
 from spade.behaviour import CyclicBehaviour
 
@@ -78,6 +79,19 @@ class CoordinatorAgent(BaseAgent):
             value = payload.get("value")
             source = payload.get("source", "user")
             conv_id = acl.conversation_id
+            
+            # ⬇⬇⬇ DODANE: walidacja slota
+            if slot not in CANONICAL_SLOTS:
+                fail = AclMessage.build_failure(
+                    conversation_id=conv_id,
+                    code="VALIDATION_ERROR",
+                    message=f"Unknown slot '{slot}'",
+                    details={"allowed": sorted(CANONICAL_SLOTS)},
+                )
+                await self.send_acl(behaviour, fail, to_jid=str(spade_msg.sender))
+                self.log(f"rejected FACT for unknown slot='{slot}'")
+                return
+            # ⬆⬆⬆ KONIEC wstawki
 
             try:
                 put_fact(conv_id, slot, {"value": value, "source": source})

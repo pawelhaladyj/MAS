@@ -12,6 +12,7 @@ from agents.common.kb import put_fact
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
 from agents.protocol.acl_messages import AclMessage
+from agents.common.slots import CANONICAL_SLOTS
 
 
 class PresenterAgent(BaseAgent):
@@ -23,6 +24,10 @@ class PresenterAgent(BaseAgent):
     
     class Kickoff(OneShotBehaviour):
         async def run(self):
+            
+            session_id = os.getenv("CONV_ID", "demo-1")
+            set_session_state(session_id, "INIT")
+            
             # PING w ACL
             acl = AclMessage.build_request(
                 conversation_id=os.getenv("CONV_ID", "demo-1"),
@@ -85,6 +90,12 @@ class PresenterAgent(BaseAgent):
         if ptype == "ASK":
             need = payload["need"][0]
             session_id = payload.get("session_id", os.getenv("CONV_ID", "demo-1"))
+            
+            # ⬇⬇⬇ DODANE: przejście INIT → GATHER
+            try:
+                set_session_state(session_id, "GATHER")
+            except Exception as e:
+                self.log(f"[warn] failed to set FSM state to GATHER: {e}")
 
             # Pytanie do człowieka (na razie log)
             human_prompt = {
@@ -125,6 +136,19 @@ class PresenterAgent(BaseAgent):
                 "risk_profile":"średni",
             }
             value = mock_values.get(need, "TODO")
+            
+            if need not in CANONICAL_SLOTS:
+                # odsyłamy FAILURE od razu, nie wysyłamy FACT
+                err = AclMessage.build_failure(
+                    conversation_id=session_id,
+                    code="VALIDATION_ERROR",
+                    message=f"Unknown slot requested '{need}'",
+                    details={"allowed": sorted(CANONICAL_SLOTS)},
+                )
+                await self.send_acl(behaviour, err, to_jid=settings.coordinator_jid)
+                self.log(f"rejected ASK for unknown slot='{need}'")
+                return
+
 
             fact = AclMessage.build_inform_fact(
                 conversation_id=session_id,
@@ -144,6 +168,10 @@ class PresenterAgent(BaseAgent):
             return
 
         self.log(f"OTHER payload: {payload}")
+        
+def set_session_state(session_id: str, state: str):
+    # prosty zapis stanu do KB w kanonicznym slocie
+    put_fact(session_id, "session_state", {"value": state})
 
 
 async def main():
