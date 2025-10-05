@@ -12,6 +12,8 @@ from agents.protocol.spade_utils import to_spade_message
 from agents.protocol.guards import meta_language_is_json, acl_language_is_json
 from agents.common.telemetry import log_acl_event
 from agents.common.metrics import inc
+from agents.common.metrics import export_to_kb
+
 
 # (opcjonalnie) integracja z KB dla zdrowia agenta
 try:
@@ -146,6 +148,15 @@ class BaseAgent(Agent):
             self.log("healthcheck saved to KB")
         except Exception as e:
             self.log(f"KB healthcheck FAILED: {e}")
+            
+    def export_metrics(self, session_id: str = "system", slot_prefix: str = "metrics") -> str:
+        try:
+            slot = export_to_kb(session_id=session_id, slot_prefix=slot_prefix)
+            self.log(f"metrics exported to KB slot='{slot}'")
+            return slot
+        except Exception as e:
+            self.log(f"metrics export FAILED: {e}")
+            return ""
 
     # ------------ Setup wspólne ------------
     async def setup(self):
