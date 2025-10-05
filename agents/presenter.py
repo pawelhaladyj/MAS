@@ -1,11 +1,12 @@
 import os
 import asyncio
 
-from spade.behaviour import OneShotBehaviour
+from spade.behaviour import OneShotBehaviour, CyclicBehaviour 
 
 from agents.agent import BaseAgent
 from agents.common.config import settings
 from agents.common.kb import put_fact
+from agents.protocol import acl_handler
 from agents.protocol.acl_messages import AclMessage
 
 
@@ -20,10 +21,17 @@ class PresenterAgent(BaseAgent):
             )
             await self.agent.send_acl(self, acl, to_jid=settings.coordinator_jid)
             self.agent.log("sent PING (ACL)")
-
+            
+    class OnACL(CyclicBehaviour):
+        @acl_handler
+        async def run(self, acl: AclMessage, raw_msg):
+            # przekazujemy do istniejącej metody handle_acl (zachowujemy Twój interfejs)
+            await self.agent.handle_acl(self, raw_msg, acl)
+            
     async def setup(self):
         await super().setup()
         self.add_behaviour(self.Kickoff())
+        self.add_behaviour(self.OnACL()) 
 
     async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
         payload = acl.payload or {}
@@ -77,11 +85,13 @@ class PresenterAgent(BaseAgent):
             }
             value = mock_values.get(need, "TODO")
 
-            fact = AclMessage.build_inform(
+            fact = AclMessage.build_inform_fact(
                 conversation_id=session_id,
-                payload={"type": "FACT", "slot": need, "value": value, "source": "user"},
+                slot=need,
+                value=value,
                 ontology=acl.ontology or "default",
             )
+            
             await self.send_acl(behaviour, fact, to_jid=settings.coordinator_jid)
             self.log(f"sent FACT (ACL) slot='{need}' value='{value}'")
             return
