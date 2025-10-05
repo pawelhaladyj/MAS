@@ -2,7 +2,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
-
+from datetime import datetime, timezone    # ⬅ NEW
 
 class Performative(str, Enum):
     REQUEST = "REQUEST"
@@ -11,7 +11,7 @@ class Performative(str, Enum):
     REFUSE = "REFUSE"
     AGREE = "AGREE"
     CONFIRM = "CONFIRM"
-
+    # (opcjonalnie w przyszłości: CANCEL)
 
 class AclMessage(BaseModel):
     performative: Performative = Field(..., description="FIPA-ACL performative")
@@ -20,6 +20,10 @@ class AclMessage(BaseModel):
     language: str = Field("json", min_length=1, description="Content language (default: json)")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Message content")
 
+    # ⬇⬇⬇ NEW meta
+    schema_version: str = Field("1.0.0", description="ACL schema version")
+    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat(), description="UTC timestamp ISO8601")
+
     @field_validator("conversation_id")
     @classmethod
     def conv_id_no_whitespace(cls, v: str) -> str:
@@ -27,7 +31,24 @@ class AclMessage(BaseModel):
             raise ValueError("conversation_id must be non-empty and trimmed")
         return v
 
-    # helpery budujące typowe wiadomości
+    # ⬇⬇⬇ NEW: lekka kontrola spójności performatywy ↔ typ payloadu (jeśli payload['type'] istnieje)
+    @field_validator("payload")
+    @classmethod
+    def performative_payload_consistency(cls, payload: Dict[str, Any], info):
+        perf = info.data.get("performative")
+        ptype = payload.get("type")
+        if ptype is None:
+            return payload  # nic nie narzucamy, kompatybilnie
+
+        if perf == Performative.REQUEST and ptype not in {"PING", "ASK"}:
+            raise ValueError(f"REQUEST not allowed for payload.type={ptype}")
+        if perf == Performative.INFORM and ptype not in {"ACK", "FACT", "OFFER", "CONFIRM"}:
+            raise ValueError(f"INFORM not allowed for payload.type={ptype}")
+        if perf == Performative.FAILURE and ptype != "ERROR":
+            raise ValueError("FAILURE must carry payload.type=ERROR")
+        return payload
+
+    # helpery budujące typowe wiadomości (zostawiamy istniejące)
     @classmethod
     def build_request(cls, conversation_id: str, payload: Dict[str, Any], *, ontology: str = "default") -> "AclMessage":
         return cls(performative=Performative.REQUEST, conversation_id=conversation_id, ontology=ontology, payload=payload)
@@ -35,6 +56,17 @@ class AclMessage(BaseModel):
     @classmethod
     def build_inform(cls, conversation_id: str, payload: Dict[str, Any], *, ontology: str = "default") -> "AclMessage":
         return cls(performative=Performative.INFORM, conversation_id=conversation_id, ontology=ontology, payload=payload)
+
+    # ⬇⬇⬇ NEW: fabryka błędów (FAILURE + ERROR)
+    @classmethod
+    def build_failure(cls, conversation_id: str, code: str, message: str, details: Optional[Dict[str, Any]] = None,
+                      *, ontology: str = "default") -> "AclMessage":
+        return cls(
+            performative=Performative.FAILURE,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload={"type": "ERROR", "code": code, "message": message, "details": details or {}},
+        )
 
     # (opcjonalnie) serializacja skrócona
     def to_json(self) -> str:
