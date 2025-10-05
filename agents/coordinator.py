@@ -52,21 +52,23 @@ class CoordinatorAgent(BaseAgent):
         ptype = payload.get("type")
 
         if ptype == "PING":
-            # ACK
-            ack = AclMessage.build_inform(
+            # ACK (builder)
+            ack = AclMessage.build_inform_ack(
                 conversation_id=acl.conversation_id,
-                payload={"type": "ACK", "echo": payload},
-                ontology=acl.ontology,
+                echo={"type": "PING"},
             )
             await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
             self.log("acked PING")
 
-            # ASK o budżet (przykład)
-            ask = AclMessage.build_request(
+            # ASK o budżet (builder)
+            ask = AclMessage.build_request_ask(
                 conversation_id=acl.conversation_id,
-                payload={"type": "ASK", "need": ["budget_total"], "session_id": acl.conversation_id},
-                ontology=acl.ontology,
+                need=["budget_total"],
+                ontology=acl.ontology or "default",
             )
+            # Dodatkowe dane sesji – jeśli potrzebujesz, dopisz w payloadzie:
+            ask.payload["session_id"] = acl.conversation_id
+
             await self.send_acl(behaviour, ask, to_jid=str(spade_msg.sender))
             self.log("asked for slot: budget_total")
             return
@@ -81,13 +83,15 @@ class CoordinatorAgent(BaseAgent):
                 put_fact(conv_id, slot, {"value": value, "source": source})
                 self.log(f"FACT saved to KB: conv='{conv_id}' slot='{slot}' value='{value}' source='{source}'")
 
-                confirm = AclMessage.build_inform(
+                confirm = AclMessage.build_inform_confirm(
                     conversation_id=conv_id,
-                    payload={"type": "CONFIRM", "slot": slot, "status": "saved"},
+                    slot=slot,
+                    status="saved",
                     ontology=acl.ontology or "default",
                 )
                 await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
                 self.log(f"confirmed FACT for slot='{slot}'")
+                
             except Exception as e:
                 self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
             return
