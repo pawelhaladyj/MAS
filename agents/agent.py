@@ -1,3 +1,6 @@
+import json
+from agents.common.telemetry import log_acl_event
+
 import asyncio
 from typing import Optional
 
@@ -35,6 +38,14 @@ class BaseAgent(Agent):
     async def send_acl(self, behaviour, acl: AclMessage, to_jid: str) -> Message:
         """Zbuduj i wyślij SPADE Message z AclMessage (wysyłka przez Behaviour)."""
         msg = to_spade_message(acl, to_jid=to_jid)
+        
+        # TELEMETRIA OUT
+        try:
+            log_acl_event(acl.conversation_id, "OUT", json.loads(acl.to_json()))
+        except Exception as e:
+            self.log(f"[telemetry] OUT failed: {e}")
+        
+        
         await behaviour.send(msg)
         # Loguj OUT
         try:

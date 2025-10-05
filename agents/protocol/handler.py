@@ -1,4 +1,8 @@
 from __future__ import annotations
+
+import json
+from agents.common.telemetry import log_acl_event
+
 from typing import Any, Awaitable, Callable, Optional
 
 from .acl_messages import AclMessage
@@ -73,6 +77,12 @@ def acl_handler(fn: Callable[..., Awaitable[None]]):
             if to:
                 await self.send(to_spade_message(acl, to))
             return
+        
+        # TELEMETRIA IN (po udanym parsowaniu ACL)
+        try:
+            log_acl_event(acl.conversation_id, "IN", json.loads(acl.to_json()))
+        except Exception:
+            pass
 
         await fn(self, acl, raw_msg)
 
