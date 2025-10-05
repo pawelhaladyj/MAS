@@ -1,5 +1,6 @@
 # tests/test_acl_roundtrip.py
 from agents.protocol.acl_messages import AclMessage, Performative
+import json
 
 def test_acl_roundtrip_request_inform():
     src = AclMessage.build_request(
@@ -29,3 +30,19 @@ def test_acl_roundtrip_request_inform():
     assert dst2.conversation_id == "conv-2"
     assert dst2.ontology == "demo"
     assert dst2.payload["type"] == "ACK"
+
+def test_acl_json_roundtrip_preserves_fields():
+    orig = AclMessage.build_inform_fact("demo-99", "budget_total", 12000)
+    blob = orig.to_json()
+    clone = AclMessage.from_json(blob)
+
+    # wartości krytyczne identyczne
+    assert clone.performative == Performative.INFORM
+    assert clone.payload["type"] == "FACT"
+    assert clone.payload["slot"] == "budget_total"
+    assert clone.payload["value"] == 12000
+
+    # timestamp i schema_version istnieją
+    data = json.loads(blob)
+    assert "ts" in data and isinstance(data["ts"], str)
+    assert data["schema_version"].startswith("1.")
