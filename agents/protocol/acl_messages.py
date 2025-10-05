@@ -40,7 +40,7 @@ class AclMessage(BaseModel):
         if ptype is None:
             return payload  # nic nie narzucamy, kompatybilnie
 
-        if perf == Performative.REQUEST and ptype not in {"PING", "ASK"}:
+        if perf == Performative.REQUEST and ptype not in {"PING", "ASK", "METRICS_EXPORT"}:
             raise ValueError(f"REQUEST not allowed for payload.type={ptype}")
         if perf == Performative.INFORM and ptype not in {"ACK", "FACT", "OFFER", "CONFIRM"}:
             raise ValueError(f"INFORM not allowed for payload.type={ptype}")
@@ -107,4 +107,19 @@ class AclMessage(BaseModel):
             ontology=ontology,
             payload={"type": "ACK", "echo": echo or {}},
         )
+        
+    @classmethod
+    def build_request_metrics_export(
+        cls,
+        conversation_id: str,
+        *,
+        ontology: str = "system",
+    ) -> "AclMessage":
+        return cls(
+            performative=Performative.REQUEST,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload={"type": "METRICS_EXPORT"},
+        )
+
 

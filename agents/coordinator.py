@@ -110,6 +110,29 @@ class CoordinatorAgent(BaseAgent):
             except Exception as e:
                 self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
             return
+        
+        if ptype == "METRICS_EXPORT":
+            # Zrzut liczników do KB i potwierdzenie
+            try:
+                slot = self.export_metrics(session_id="system", slot_prefix="metrics")
+                confirm = AclMessage.build_inform(
+                    conversation_id=acl.conversation_id,
+                    payload={"type": "CONFIRM", "slot": "metrics_export", "status": slot or "failed"},
+                    ontology=acl.ontology or "default",
+                )
+                await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
+                self.log(f"metrics exported to KB slot='{slot}'")
+            except Exception as e:
+                fail = AclMessage.build_failure(
+                    conversation_id=acl.conversation_id,
+                    code="INTERNAL_ERROR",
+                    message="Metrics export failed",
+                    details={"error": str(e)},
+                )
+                await self.send_acl(behaviour, fail, to_jid=str(spade_msg.sender))
+                self.log(f"metrics export FAILED: {e}")
+            return
+
 
         # Inne typy — dyscyplina: tylko log.
         self.log(f"OTHER payload: {payload}")
