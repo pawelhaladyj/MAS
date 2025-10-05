@@ -3,6 +3,7 @@ from .spade_utils import to_spade_message
 from .guards import meta_language_is_json, acl_language_is_json
 from .errors import ErrorCode, ERROR_MESSAGES
 from .validators import validate_acl_json, validate_acl_dict
+from .handler import acl_handler
 
 __all__ = [
     "AclMessage", 
@@ -13,5 +14,6 @@ __all__ = [
     "ErrorCode", 
     "ERROR_MESSAGES", 
     "validate_acl_json", 
-    "validate_acl_dict"
+    "validate_acl_dict",
+    "acl_handler"
     ]
