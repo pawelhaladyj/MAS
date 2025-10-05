@@ -1,5 +1,4 @@
 import json
-from agents.common.telemetry import log_acl_event
 
 import asyncio
 from typing import Optional
@@ -11,6 +10,8 @@ from spade.message import Message
 from agents.protocol.acl_messages import AclMessage
 from agents.protocol.spade_utils import to_spade_message
 from agents.protocol.guards import meta_language_is_json, acl_language_is_json
+from agents.common.telemetry import log_acl_event
+from agents.common.metrics import inc
 
 # (opcjonalnie) integracja z KB dla zdrowia agenta
 try:
@@ -45,7 +46,19 @@ class BaseAgent(Agent):
         except Exception as e:
             self.log(f"[telemetry] OUT failed: {e}")
         
-        
+        # metrics OUT
+        try:
+            inc("acl_out_total", 1)
+            p = getattr(acl, "performative", None)
+            if p and getattr(p, "value", None):
+                inc(f"acl_out_performative_{p.value}", 1)
+            payload = getattr(acl, "payload", {}) or {}
+            ptype = payload.get("type")
+            if isinstance(ptype, str):
+                inc(f"acl_out_type_{ptype}", 1)
+        except Exception:
+            pass
+
         await behaviour.send(msg)
         # Loguj OUT
         try:

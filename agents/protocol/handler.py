@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from agents.common.telemetry import log_acl_event
-
 from typing import Any, Awaitable, Callable, Optional
+
+from agents.common.telemetry import log_acl_event
+from agents.common.metrics import inc
 
 from .acl_messages import AclMessage
 from .validators import validate_acl_json
@@ -23,17 +24,6 @@ def _conv_id_from_meta(raw_msg: Any, default: str = "invalid-conv") -> str:
 
 
 def acl_handler(fn: Callable[..., Awaitable[None]]):
-    """
-    Dekorator dla metod zachowań (SPADE-like):
-
-    - Tryb A: SPADE wywołuje run(self) bez argumentów -> dekorator sam robi await self.receive(timeout=...).
-    - Tryb B: Testy/atrapy wywołują run(self, raw_msg) -> używamy przekazanego raw_msg.
-
-    Walidacja:
-    - limit rozmiaru body (domyślnie 64 KB, można nadpisać self.acl_max_body_bytes),
-    - JSON -> AclMessage (validate_acl_json),
-    - przy błędzie odsyła FAILURE/ERROR do nadawcy.
-    """
     async def wrapper(self, maybe_raw_msg: Optional[Any] = None):
         raw_msg = maybe_raw_msg
 
@@ -83,7 +73,20 @@ def acl_handler(fn: Callable[..., Awaitable[None]]):
             log_acl_event(acl.conversation_id, "IN", json.loads(acl.to_json()))
         except Exception:
             pass
+        
+        # ⬇⬇⬇ METRICS IN — NOWA WSTAWKA
+        try:
+            inc("acl_in_total", 1)
+            p = getattr(acl, "performative", None)
+            if p and getattr(p, "value", None):
+                inc(f"acl_in_performative_{p.value}", 1)
+            ptype = (acl.payload or {}).get("type")
+            if isinstance(ptype, str):
+                inc(f"acl_in_type_{ptype}", 1)
+        except Exception:
+            pass
+        # ⬆⬆⬆ KONIEC WSTAWKI
 
         await fn(self, acl, raw_msg)
-
     return wrapper
+
