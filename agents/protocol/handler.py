@@ -27,16 +27,36 @@ def acl_handler(fn: Callable[..., Awaitable[None]]):
     async def wrapper(self, maybe_raw_msg: Optional[Any] = None):
         raw_msg = maybe_raw_msg
 
-        # Tryb A: bez wiadomości -> odbierz ze skrzynki (SPADE)
+        # Tryb A: bez wiadomości -> odbierz ze skrzynki (SPADE) z „idle guardem”
         if raw_msg is None:
             receive = getattr(self, "receive", None)
-            if callable(receive):
-                timeout = getattr(self, "acl_handler_timeout", 1.0)
-                raw_msg = await receive(timeout=timeout)
-                if raw_msg is None:
-                    return  # brak wiadomości w tym ticku
-            else:
+            if not callable(receive):
                 return
+
+            timeout = getattr(self, "acl_handler_timeout", 1.0)
+            raw_msg = await receive(timeout=timeout)
+
+            if raw_msg is None:
+                # idle guard
+                try:
+                    max_idle = int(getattr(self, "acl_max_idle_ticks", 0))  # 0 = wyłączone
+                except Exception:
+                    max_idle = 0
+
+                if max_idle > 0:
+                    ticks = int(getattr(self, "_acl_idle_ticks", 0)) + 1
+                    setattr(self, "_acl_idle_ticks", ticks)
+                    if ticks >= max_idle:
+                        kill = getattr(self, "kill", None)
+                        if callable(kill):
+                            await kill()
+                        return
+                return
+            else:
+                # reset licznika, skoro przyszła realna wiadomość
+                if hasattr(self, "_acl_idle_ticks"):
+                    setattr(self, "_acl_idle_ticks", 0)
+
 
         body = getattr(raw_msg, "body", "") or ""
         fallback_cid = _conv_id_from_meta(raw_msg)
