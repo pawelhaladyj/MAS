@@ -75,3 +75,36 @@ class AclMessage(BaseModel):
     @classmethod
     def from_json(cls, data: str) -> "AclMessage":
         return cls.model_validate_json(data)
+    
+    @classmethod
+    def build_request_ask(cls, conversation_id: str, need: list[str], *, ontology: str = "default") -> "AclMessage":
+        # minimalna walidacja listy (pełną zrobimy później)
+        if not need or len({*need}) != len(need):
+            raise ValueError("ASK.need must be non-empty and unique")
+        return cls(
+            performative=Performative.REQUEST,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload={"type": "ASK", "need": need},
+        )
+
+    @classmethod
+    def build_inform_fact(cls, conversation_id: str, slot: str, value: Any, *, ontology: str = "default") -> "AclMessage":
+        if not slot or not slot.strip():
+            raise ValueError("FACT.slot must be non-empty")
+        return cls(
+            performative=Performative.INFORM,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload={"type": "FACT", "slot": slot, "value": value},
+        )
+
+    @classmethod
+    def build_inform_ack(cls, conversation_id: str, echo: dict[str, Any], *, ontology: str = "default") -> "AclMessage":
+        return cls(
+            performative=Performative.INFORM,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload={"type": "ACK", "echo": echo or {}},
+        )
+
