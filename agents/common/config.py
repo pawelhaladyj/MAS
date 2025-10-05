@@ -13,5 +13,8 @@ class Settings(BaseModel):
     presenter_pass: str = os.getenv("XMPP_PRESENTER_PASS","presenter")
     coordinator_pass: str = os.getenv("XMPP_COORDINATOR_PASS","coordinator")
     verify_security: bool = os.getenv("VERIFY_SECURITY", "true").lower() == "true"
+    acl_max_body_bytes: int = os.getenv("ACL_MAX_BODY_BYTES","65536")
+    acl_max_idle_ticks: int = os.getenv("ACL_MAX_IDLE_TICKS","0")
+    
     
 settings = Settings()

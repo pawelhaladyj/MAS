@@ -39,7 +39,8 @@ class PresenterAgent(BaseAgent):
             
     class OnACL(CyclicBehaviour):
         acl_handler_timeout = 0.2  # ⬅ DODANE: szybka cykliczna próba odbioru
-        acl_max_idle_ticks = 300
+        acl_max_body_bytes = settings.acl_max_body_bytes
+        acl_max_idle_ticks = settings.acl_max_idle_ticks  
         
         @acl_handler
         async def run(self, acl: AclMessage, raw_msg):

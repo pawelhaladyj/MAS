@@ -68,7 +68,12 @@ def acl_handler(fn: Callable[..., Awaitable[None]]):
             max_bytes = 64 * 1024
         size_bytes = len(body.encode("utf-8"))
         if size_bytes > max_bytes:
-            # budujemy FAILURE ręcznie (bez validate_acl_json, bo body może być gigantyczne)
+            # metrics
+            try:
+                inc("acl_in_body_too_large_total", 1)
+            except Exception:
+                pass
+
             fail = AclMessage.build_failure(
                 conversation_id=fallback_cid,
                 code="VALIDATION_ERROR",
@@ -79,15 +84,22 @@ def acl_handler(fn: Callable[..., Awaitable[None]]):
             if to:
                 await self.send(to_spade_message(fail, to))
             return
+
         # END NEW
 
         ok, acl = validate_acl_json(body, fallback_conversation_id=fallback_cid)
         if not ok:
+            # metrics
+            try:
+                inc("acl_in_validation_errors_total", 1)
+            except Exception:
+                pass
+
             to = _sender_jid(raw_msg)
             if to:
                 await self.send(to_spade_message(acl, to))
             return
-        
+
         # TELEMETRIA IN (po udanym parsowaniu ACL)
         try:
             log_acl_event(acl.conversation_id, "IN", json.loads(acl.to_json()))
