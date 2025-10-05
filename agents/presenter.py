@@ -1,5 +1,8 @@
 import os
 import asyncio
+import json
+import time
+from collections import deque
 
 from spade.behaviour import OneShotBehaviour, CyclicBehaviour 
 
@@ -7,10 +10,17 @@ from agents.agent import BaseAgent
 from agents.common.config import settings
 from agents.common.kb import put_fact
 from agents.protocol import acl_handler
+from agents.protocol.guards import acl_language_is_json
 from agents.protocol.acl_messages import AclMessage
 
 
 class PresenterAgent(BaseAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Pamiętamy klucze ostatnich 64 ramek, by nie obrabiać ich podwójnie
+        self._acl_seen_keys = deque(maxlen=64)
+    
+    
     class Kickoff(OneShotBehaviour):
         async def run(self):
             # PING w ACL
@@ -23,9 +33,12 @@ class PresenterAgent(BaseAgent):
             self.agent.log("sent PING (ACL)")
             
     class OnACL(CyclicBehaviour):
+        acl_handler_timeout = 0.2  # ⬅ DODANE: szybka cykliczna próba odbioru
         @acl_handler
         async def run(self, acl: AclMessage, raw_msg):
-            # przekazujemy do istniejącej metody handle_acl (zachowujemy Twój interfejs)
+            # filtr języka, „jak Pan Bóg przykazał”
+            if not acl_language_is_json(acl):
+                return
             await self.agent.handle_acl(self, raw_msg, acl)
             
     async def setup(self):
@@ -34,8 +47,36 @@ class PresenterAgent(BaseAgent):
         self.add_behaviour(self.OnACL()) 
 
     async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+        
+        # --- filtr duplikatów (ostatnie 64 ramki) ---
+        try:
+            k = (
+                acl.conversation_id,
+                acl.performative.value,
+                acl.ontology or "default",
+                json.dumps(acl.payload, sort_keys=True, ensure_ascii=False),
+            )
+        except Exception:
+            k = (acl.conversation_id, acl.performative.value, acl.ontology or "default", str(acl.payload))
+
+        if k in self._acl_seen_keys:
+            return  # już widzieliśmy tę samą ramkę -> pomijamy
+        self._acl_seen_keys.append(k)
+        # --- koniec filtra ---
+        
         payload = acl.payload or {}
         ptype = payload.get("type")
+        
+        # ⬇⬇⬇ DODANE: ACK na PING
+        if ptype == "PING":
+            ack = AclMessage.build_inform_ack(
+                conversation_id=acl.conversation_id,
+                echo={"type": "PING"},
+            )
+            await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
+            self.log("ACK for PING sent")
+            return
+        # ⬆⬆⬆ KONIEC wstawki
 
         if ptype == "ACK":
             self.log(f"ACK: {payload}")
