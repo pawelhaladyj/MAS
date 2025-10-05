@@ -1,13 +1,53 @@
 import asyncio
+import json
+from collections import deque
 
 from agents.agent import BaseAgent
 from agents.common.kb import put_fact
 from agents.common.config import settings
 from agents.protocol.acl_messages import AclMessage
+from agents.protocol import acl_handler
+from agents.protocol.guards import acl_language_is_json
+
+from spade.behaviour import CyclicBehaviour
 
 
 class CoordinatorAgent(BaseAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._acl_seen_keys = deque(maxlen=64)  # pamięć ostatnich kluczy
+    
+    class OnACL(CyclicBehaviour):
+        acl_handler_timeout = 0.2  # szybki „tick” odbioru
+
+        @acl_handler
+        async def run(self, acl: AclMessage, raw_msg):
+            if not acl_language_is_json(acl):
+                return
+            # delegacja do istniejącej logiki
+            await self.agent.handle_acl(self, raw_msg, acl)
+            
+    async def setup(self):
+        await super().setup()
+        self.add_behaviour(self.OnACL())
+    
     async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+        # --- filtr duplikatów (ostatnie 64 ramki) ---
+        try:
+            key = (
+                acl.conversation_id,
+                acl.performative.value,
+                acl.ontology or "default",
+                json.dumps(acl.payload, sort_keys=True, ensure_ascii=False),
+            )
+        except Exception:
+            key = (acl.conversation_id, acl.performative.value, acl.ontology or "default", str(acl.payload))
+
+        if key in self._acl_seen_keys:
+            return
+        self._acl_seen_keys.append(key)
+        # --- koniec filtra ---
+        
         payload = acl.payload or {}
         ptype = payload.get("type")
 
