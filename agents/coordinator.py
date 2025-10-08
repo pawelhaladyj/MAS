@@ -9,7 +9,10 @@ from agents.protocol.acl_messages import AclMessage
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
 from agents.common.slots import CANONICAL_SLOTS
-from agents.common.validators import validate_budget_total, validate_dates_start, validate_nights
+from agents.common.validators import (
+    validate_budget_total, validate_dates_start, validate_nights, validate_passport_ok
+)
+
 
 
 from spade.behaviour import CyclicBehaviour
@@ -102,6 +105,7 @@ class CoordinatorAgent(BaseAgent):
                 "budget_total": validate_budget_total,
                 "dates_start": validate_dates_start,
                 "nights": validate_nights, 
+                "passport_ok": validate_passport_ok, 
             }
             validator = validators.get(slot)
             if validator:

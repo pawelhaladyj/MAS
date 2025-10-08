@@ -57,3 +57,22 @@ def validate_nights(v):
     except Exception:
         return False, "nights must be an integer > 0"
 
+def validate_passport_ok(v):
+    """
+    Akceptuje: bool lub str ('tak','nie','yes','no','true','false','1','0').
+    Zwraca (ok: bool, normalized_or_msg) gdzie normalized to bool.
+    """
+    if isinstance(v, bool):
+        return True, v
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return True, bool(int(v))
+    if isinstance(v, str):
+        s = v.strip().lower()
+        truthy = {"tak", "yes", "true", "1", "y", "t"}
+        falsy  = {"nie", "no", "false", "0", "n", "f"}
+        if s in truthy:
+            return True, True
+        if s in falsy:
+            return True, False
+    return False, "passport_ok must be boolean (tak/nie)"
+
