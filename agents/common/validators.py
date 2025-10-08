@@ -1,6 +1,7 @@
 # agents/common/validators.py
 from __future__ import annotations
 from datetime import date
+import re
 
 def validate_budget_total(v):
     """
@@ -75,4 +76,52 @@ def validate_passport_ok(v):
         if s in falsy:
             return True, False
     return False, "passport_ok must be boolean (tak/nie)"
+
+def validate_party_children_ages(v):
+    """
+    Akceptuje:
+      - list[int|str] lub str: "13,11" / "13; 11" / "13 11"
+    Zasady:
+      - każdy wiek to int z przedziału 0..17
+      - przynajmniej jeden element
+    Zwraca: (ok: bool, normalized_or_msg)
+      normalized: list[int] (kolejność zachowana)
+    """
+    def to_int(x):
+        if isinstance(x, bool):
+            raise ValueError()
+        if isinstance(x, (int, float)):
+            return int(x)
+        if isinstance(x, str):
+            x = x.strip()
+            if not x:
+                raise ValueError()
+            return int(x)
+        raise ValueError()
+
+    items = []
+    if isinstance(v, str):
+        # rozdzielamy po przecinkach/średnikach/spacjach
+        raw = [p for p in re.split(r"[,\s;]+", v.strip()) if p]
+        try:
+            items = [to_int(p) for p in raw]
+        except Exception:
+            return False, "party_children_ages must be a list of integers"
+    elif isinstance(v, (list, tuple)):
+        try:
+            items = [to_int(p) for p in v]
+        except Exception:
+            return False, "party_children_ages must be a list of integers"
+    else:
+        return False, "party_children_ages must be a list or string"
+
+    if not items:
+        return False, "party_children_ages cannot be empty"
+
+    for a in items:
+        if a < 0 or a > 17:
+            return False, "each age must be in range 0..17"
+
+    return True, items
+
 
