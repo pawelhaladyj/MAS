@@ -41,3 +41,19 @@ def validate_dates_start(v):
         return True, f"{y:04d}-{m:02d}-{d:02d}"
     except Exception:
         return False, "dates_start must be a valid calendar date"
+    
+def validate_nights(v):
+    """
+    Akceptuje int/str liczbowe > 0. Normalizuje do int.
+    Zwraca (ok: bool, normalized_or_msg)
+    """
+    try:
+        if isinstance(v, str):
+            v = v.strip().replace(" ", "").replace("_", "")
+        v = int(v)
+        if v <= 0:
+            return False, "nights must be > 0"
+        return True, v
+    except Exception:
+        return False, "nights must be an integer > 0"
+
