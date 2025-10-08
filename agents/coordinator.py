@@ -21,6 +21,24 @@ class CoordinatorAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._acl_seen_keys = deque(maxlen=64)  # pamięć ostatnich kluczy
+        
+    def _make_offer_stub(self, conversation_id: str, ontology: str) -> AclMessage:
+        """Wstępna, luźna propozycja jako AclMessage."""
+        proposal = {
+            "headline": "Na start: Egipt na tydzień all-inclusive?",
+            "notes": "Luźna podpowiedź — możemy iść w inną stronę, jeśli wolisz.",
+            "details": {
+                "destination": "Hurghada (Egipt)",
+                "duration_nights": 7,
+                "board": "AI",
+                "stars": 5,
+            },
+        }
+        return AclMessage.build_inform(
+            conversation_id=conversation_id,
+            payload={"type": "OFFER", "proposal": proposal},
+            ontology=ontology,
+        )
     
     class OnACL(CyclicBehaviour):
         acl_handler_timeout = 0.2  # szybki „tick” odbioru
@@ -67,17 +85,10 @@ class CoordinatorAgent(BaseAgent):
             await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
             self.log("acked PING")
 
-            # ASK o budżet (builder)
-            ask = AclMessage.build_request_ask(
-                conversation_id=acl.conversation_id,
-                need=["budget_total"],
-                ontology=acl.ontology or "default",
-            )
-            # Dodatkowe dane sesji – jeśli potrzebujesz, dopisz w payloadzie:
-            ask.payload["session_id"] = acl.conversation_id
-
-            await self.send_acl(behaviour, ask, to_jid=str(spade_msg.sender))
-            self.log("asked for slot: budget_total")
+            # NOWE: startowa, luźna propozycja zamiast ASK
+            offer = self._make_offer_stub(acl.conversation_id, acl.ontology or "default")
+            await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
+            self.log("sent initial OFFER")
             return
 
         if ptype == "FACT":
@@ -134,6 +145,12 @@ class CoordinatorAgent(BaseAgent):
                 )
                 await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
                 self.log(f"confirmed FACT for slot='{slot}'")
+                
+                # ⬇ NOWE: lekka propozycja na bazie nowych faktów (bez dopytywania)
+                offer = self._make_offer_stub(conv_id, acl.ontology or "default")
+                await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
+                self.log("offered update based on user prefs")
+                return
 
             except Exception as e:
                 self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
@@ -176,7 +193,7 @@ async def main():
     )
     a.write_kb_health()
     await BaseAgent.run_forever(a)
-
+    
 
 if __name__ == "__main__":
     asyncio.run(main())
