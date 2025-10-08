@@ -9,6 +9,8 @@ from agents.protocol.acl_messages import AclMessage
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
 from agents.common.slots import CANONICAL_SLOTS
+from agents.common.validators import validate_budget_total, validate_dates_start
+
 
 from spade.behaviour import CyclicBehaviour
 
@@ -94,6 +96,27 @@ class CoordinatorAgent(BaseAgent):
                 self.log(f"rejected FACT for unknown slot='{slot}'")
                 return
             # ⬆⬆⬆ KONIEC wstawki
+            
+                        # --- walidacje wartości dla wybranych slotów ---
+            validators = {
+                "budget_total": validate_budget_total,
+                "dates_start": validate_dates_start,
+            }
+            validator = validators.get(slot)
+            if validator:
+                ok, out = validator(value)
+                if not ok:
+                    fail = AclMessage.build_failure(
+                        conversation_id=conv_id,
+                        code="VALIDATION_ERROR",
+                        message=f"Invalid value for '{slot}'",
+                        details={"reason": out},
+                    )
+                    await self.send_acl(behaviour, fail, to_jid=str(spade_msg.sender))
+                    self.log(f"rejected FACT slot='{slot}' reason='{out}'")
+                    return
+                # normalizacja wartości (np. int dla budget_total, sformatowana data)
+                value = out
 
             try:
                 put_fact(conv_id, slot, {"value": value, "source": source})
