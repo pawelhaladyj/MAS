@@ -1,28 +1,48 @@
 # api/routes/chat.py
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-import json
+from __future__ import annotations
 
+import asyncio
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
 from agents.protocol.acl_messages import AclMessage
 
 router = APIRouter()
 
 class ChatIn(BaseModel):
-    conversation_id: str = Field(..., min_length=1)
-    text: str = Field(..., min_length=1)
-    ontology: str = "ui"
+    text: str
+    conversation_id: str = "demo-1"
+    session_id: str | None = None
 
 @router.post("/chat")
-async def chat(body: ChatIn):
-    # Budujemy kanoniczne USER_MSG (bez realnej wysyłki – na tym kroku tylko echo)
+async def chat(request: Request, payload: ChatIn):
+    # 1) zbuduj USER_MSG ACL (do echo w odpowiedzi, jak wcześniej)
     acl = AclMessage.build_request_user_msg(
-        conversation_id=body.conversation_id,
-        text=body.text,
-        ontology=body.ontology,
-        session_id=body.conversation_id,
+        conversation_id=payload.conversation_id,
+        text=payload.text,
+        ontology="ui",
+        session_id=payload.session_id or payload.conversation_id,
     )
-    # Zwracamy JSON ACL – ułatwia debug oraz dalsze testy e2e
+
+    # 2) wstaw do kolejki mostka (HTTP → Bridge)
+    await request.app.state.bridge_inbox.put({
+        "text": payload.text,
+        "conversation_id": payload.conversation_id,
+        "session_id": payload.session_id or payload.conversation_id,
+    })
+
+    # 3) spróbuj złapać PRESENTER_REPLY (Bridge → HTTP), krótki timeout
+    reply = None
+    try:
+        reply_item = await asyncio.wait_for(
+            request.app.state.bridge_outbox.get(), timeout=1.5
+        )
+        # (opcjonalnie) tu można filtrować po conversation_id, jeśli potrzeba
+        reply = reply_item
+    except asyncio.TimeoutError:
+        pass
+
     return {
-        "status": "accepted",
-        "acl": json.loads(acl.to_json()),
+        "status": "accepted" if reply is None else "replied",
+        "acl": acl.model_dump(),
+        "reply": reply,  # None lub {"conversation_id": "...", "payload": {...}}
     }

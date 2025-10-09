@@ -15,6 +15,9 @@ class Settings(BaseModel):
     verify_security: bool = os.getenv("VERIFY_SECURITY", "true").lower() == "true"
     acl_max_body_bytes: int = os.getenv("ACL_MAX_BODY_BYTES","65536")
     acl_max_idle_ticks: int = os.getenv("ACL_MAX_IDLE_TICKS","0")
+    api_bridge_jid: str = os.getenv("API_BRIDGE_JID", "bridge@xmpp.pawelhaladyj.pl")
+    api_bridge_pass: str = os.getenv("API_BRIDGE_PASS", "bridge")
+    
     
     
 settings = Settings()
