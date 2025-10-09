@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from collections import deque
 
 from agents.agent import BaseAgent
@@ -14,6 +15,8 @@ from agents.common.validators import (
     validate_passport_ok, validate_party_children_ages
 )
 
+from ai.openai_client import chat_reply
+
 from spade.behaviour import CyclicBehaviour
 
 
@@ -21,24 +24,6 @@ class CoordinatorAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._acl_seen_keys = deque(maxlen=64)  # pamięć ostatnich kluczy
-        
-    def _make_offer_stub(self, conversation_id: str, ontology: str) -> AclMessage:
-        """Wstępna, luźna propozycja jako AclMessage."""
-        proposal = {
-            "headline": "Na start: Egipt na tydzień all-inclusive?",
-            "notes": "Luźna podpowiedź — możemy iść w inną stronę, jeśli wolisz.",
-            "details": {
-                "destination": "Hurghada (Egipt)",
-                "duration_nights": 7,
-                "board": "AI",
-                "stars": 5,
-            },
-        }
-        return AclMessage.build_inform(
-            conversation_id=conversation_id,
-            payload={"type": "OFFER", "proposal": proposal},
-            ontology=ontology,
-        )
     
     class OnACL(CyclicBehaviour):
         acl_handler_timeout = 0.2  # szybki „tick” odbioru
@@ -86,7 +71,7 @@ class CoordinatorAgent(BaseAgent):
             self.log("acked PING")
 
             # NOWE: startowa, luźna propozycja zamiast ASK
-            offer = self._make_offer_stub(acl.conversation_id, acl.ontology or "default")
+            offer = make_offer(acl.conversation_id, acl.ontology or "default")
             await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
             self.log("sent initial OFFER")
             return
@@ -147,7 +132,7 @@ class CoordinatorAgent(BaseAgent):
                 self.log(f"confirmed FACT for slot='{slot}'")
                 
                 # ⬇ NOWE: lekka propozycja na bazie nowych faktów (bez dopytywania)
-                offer = self._make_offer_stub(conv_id, acl.ontology or "default")
+                offer = make_offer(conv_id, acl.ontology or "default")
                 await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
                 self.log("offered update based on user prefs")
                 return
@@ -181,7 +166,43 @@ class CoordinatorAgent(BaseAgent):
 
         # Inne typy — dyscyplina: tylko log.
         self.log(f"OTHER payload: {payload}")
+        
+def make_offer(conversation_id: str, ontology: str) -> AclMessage:
+    """Lekka, wstępna propozycja: AI (gdy AI_ENABLED=1) lub bezpieczny fallback."""
+    proposal = {
+        "headline": "Na start: Egipt na tydzień all-inclusive?",
+        "notes": "Luźna podpowiedź — możemy iść w inną stronę, jeśli wolisz.",
+        "details": {
+            "destination": "Hurghada (Egipt)",
+            "duration_nights": 7,
+            "board": "AI",
+            "stars": 5,
+        },
+    }
 
+    if os.getenv("AI_ENABLED", "0") == "1":
+        try:
+            import ai.openai_client as ai_mod
+            ai_text = ai_mod.chat_reply(
+                system_prompt=(
+                    "Jesteś kumplem do rozmowy o wakacjach. "
+                    "Podaj jedną luźną propozycję otwierającą dialog (po polsku), krótko i bez list."
+                ),
+                user_text="Zaproponuj jedną luźną propozycję startową do rozmowy o planowanej podróży.",
+            )
+            if ai_text:
+                first_line = ai_text.strip().splitlines()[0][:120]
+                proposal["headline"] = first_line or proposal["headline"]
+                proposal["notes"] = ai_text.strip() or proposal["notes"]
+        except Exception:
+            # cichy fallback – zostaje propozycja domyślna
+            pass
+
+    return AclMessage.build_inform(
+        conversation_id=conversation_id,
+        payload={"type": "OFFER", "proposal": proposal},
+        ontology=ontology,
+    )
 
 async def main():
     a = CoordinatorAgent(
