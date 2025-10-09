@@ -141,6 +141,24 @@ class CoordinatorAgent(BaseAgent):
                 self.log(f"ERR KB write FAILED for slot='{slot}': {e}")
             return
         
+        if ptype == "USER_MSG":
+            conv_id = acl.conversation_id
+            text = (payload or {}).get("text", "")
+
+            # (opcjonalnie) zapisz ostatnią wypowiedź usera do KB
+            try:
+                put_fact(conv_id, "last_user_msg", {"value": text, "source": "user"})
+            except Exception:
+                pass
+
+            # wygeneruj luźną propozycję (AI jeśli AI_ENABLED=1, inaczej stub)
+            offer = self._make_offer(conv_id, acl.ontology or "default")
+            # odeślij do nadawcy (API bridge), który może przekazać to dalej do klienta
+            await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
+            self.log("sent OFFER in response to USER_MSG")
+            return
+
+        
         if ptype == "METRICS_EXPORT":
             # Zrzut liczników do KB i potwierdzenie
             try:
