@@ -40,9 +40,9 @@ class AclMessage(BaseModel):
         if ptype is None:
             return payload  # nic nie narzucamy, kompatybilnie
 
-        if perf == Performative.REQUEST and ptype not in {"PING", "ASK", "METRICS_EXPORT"}:
+        if perf == Performative.REQUEST and ptype not in {"PING", "ASK", "METRICS_EXPORT", "USER_MSG"}:
             raise ValueError(f"REQUEST not allowed for payload.type={ptype}")
-        if perf == Performative.INFORM and ptype not in {"ACK", "FACT", "OFFER", "CONFIRM"}:
+        if perf == Performative.INFORM and ptype not in {"ACK", "FACT", "OFFER", "CONFIRM", "PRESENTER_REPLY"}:
             raise ValueError(f"INFORM not allowed for payload.type={ptype}")
         if perf == Performative.FAILURE and ptype != "ERROR":
             raise ValueError("FAILURE must carry payload.type=ERROR")
@@ -121,5 +121,44 @@ class AclMessage(BaseModel):
             ontology=ontology,
             payload={"type": "METRICS_EXPORT"},
         )
+    
+    @classmethod
+    def build_request_user_msg(
+        cls,
+        conversation_id: str,
+        text: str,
+        *,
+        ontology: str = "ui",
+        session_id: Optional[str] = None,
+    ) -> "AclMessage":
+        payload = {"type": "USER_MSG", "text": text}
+        if session_id:
+            payload["session_id"] = session_id
+        return cls(
+            performative=Performative.REQUEST,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload=payload,
+        )
+
+    @classmethod
+    def build_inform_presenter_reply(
+        cls,
+        conversation_id: str,
+        text: str,
+        *,
+        ontology: str = "ui",
+        session_id: Optional[str] = None,
+    ) -> "AclMessage":
+        payload = {"type": "PRESENTER_REPLY", "text": text}
+        if session_id:
+            payload["session_id"] = session_id
+        return cls(
+            performative=Performative.INFORM,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload=payload,
+        )
+
 
 
