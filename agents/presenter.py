@@ -150,6 +150,35 @@ class PresenterAgent(BaseAgent):
             # w trybie normalnym: kończymy na podpowiedzi do człowieka (bez wysyłania FACT)
             return
 
+        if ptype == "USER_MSG":
+            text = (payload or {}).get("text", "").strip()
+            session_id = payload.get("session_id") or acl.conversation_id
+
+            # opcjonalnie: stan czatu
+            try:
+                set_session_state(session_id, "CHAT")
+            except Exception as e:
+                self.log(f"[warn] failed to set FSM state to CHAT: {e}")
+
+            # bardzo prosty „mock AI”: powitaj / dopytaj / potwierdź
+            if not text:
+                reply_text = "Hej! Opowiedz, dokąd i kiedy chcesz lecieć — ogarniemy resztę 🙂"
+            elif "cześć" in text.lower() or "hej" in text.lower():
+                reply_text = "Cześć! Masz już jakieś kierunki w głowie czy najpierw pogadamy o budżecie i klimacie?"
+            else:
+                reply_text = f"Brzmi spoko: „{text}”. Chcesz bardziej chill czy aktywnie? I jaki mniej więcej budżet?"
+
+            reply = AclMessage.build_inform_presenter_reply(
+                conversation_id=acl.conversation_id,
+                text=reply_text,
+                ontology=acl.ontology or "ui",
+                session_id=session_id,
+            )
+            await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
+            self.log(f"sent PRESENTER_REPLY: {reply_text}")
+            return
+
+
         
         if ptype == "OFFER":
             prop = payload.get("proposal", {})
