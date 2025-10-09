@@ -12,6 +12,8 @@ from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
 from agents.protocol.acl_messages import AclMessage
 
+from ai.openai_client import chat_reply  # opcjonalny wrapper (bezpieczny)
+
 
 class PresenterAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
@@ -160,13 +162,25 @@ class PresenterAgent(BaseAgent):
             except Exception as e:
                 self.log(f"[warn] failed to set FSM state to CHAT: {e}")
 
-            # bardzo prosty „mock AI”: powitaj / dopytaj / potwierdź
-            if not text:
-                reply_text = "Hej! Opowiedz, dokąd i kiedy chcesz lecieć — ogarniemy resztę 🙂"
-            elif "cześć" in text.lower() or "hej" in text.lower():
-                reply_text = "Cześć! Masz już jakieś kierunki w głowie czy najpierw pogadamy o budżecie i klimacie?"
-            else:
-                reply_text = f"Brzmi spoko: „{text}”. Chcesz bardziej chill czy aktywnie? I jaki mniej więcej budżet?"
+            # Spróbuj AI TYLKO jeśli AI_ENABLED=1
+            reply_text = None
+            if os.getenv("AI_ENABLED", "0") == "1" and text:
+                system = (
+                    "Jesteś kumplem-doradcą podróży: luz, życzliwość, bez ankiety. "
+                    "Dopytuj tylko naturalnie, krok po kroku. Odpowiadaj po polsku, krótko."
+                )
+                maybe = chat_reply(system, text)
+                if maybe:
+                    reply_text = maybe
+
+            # Fallback – dotychczasowe „kumplowskie” odpowiedzi
+            if not reply_text:
+                if not text:
+                    reply_text = "Hej! Opowiedz, dokąd i kiedy chcesz lecieć — ogarniemy resztę 🙂"
+                elif "cześć" in text.lower() or "hej" in text.lower():
+                    reply_text = "Cześć! Masz już jakieś kierunki w głowie czy najpierw pogadamy o budżecie i klimacie?"
+                else:
+                    reply_text = f"Brzmi spoko: „{text}”. Chcesz bardziej chill czy aktywnie? I jaki mniej więcej budżet?"
 
             reply = AclMessage.build_inform_presenter_reply(
                 conversation_id=acl.conversation_id,
