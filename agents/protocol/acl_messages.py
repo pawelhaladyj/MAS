@@ -40,9 +40,13 @@ class AclMessage(BaseModel):
         if ptype is None:
             return payload  # nic nie narzucamy, kompatybilnie
 
-        if perf == Performative.REQUEST and ptype not in {"PING", "ASK", "METRICS_EXPORT", "USER_MSG"}:
+        # ⬇⬇⬇ DOPISKA: rozszerzamy dozwolone typy o WEATHER_ADVICE
+        allowed_for_request = {"PING", "ASK", "METRICS_EXPORT", "USER_MSG", "WEATHER_ADVICE"}
+        allowed_for_inform  = {"ACK", "FACT", "OFFER", "CONFIRM", "PRESENTER_REPLY", "WEATHER_ADVICE"}
+
+        if perf == Performative.REQUEST and ptype not in allowed_for_request:
             raise ValueError(f"REQUEST not allowed for payload.type={ptype}")
-        if perf == Performative.INFORM and ptype not in {"ACK", "FACT", "OFFER", "CONFIRM", "PRESENTER_REPLY"}:
+        if perf == Performative.INFORM and ptype not in allowed_for_inform:
             raise ValueError(f"INFORM not allowed for payload.type={ptype}")
         if perf == Performative.FAILURE and ptype != "ERROR":
             raise ValueError("FAILURE must carry payload.type=ERROR")
