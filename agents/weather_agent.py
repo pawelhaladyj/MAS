@@ -13,6 +13,9 @@ from agents.agent import BaseAgent  # Twój bazowy agent (logi, KB, itp.)
 from agents.protocol import AclMessage, Performative  # Pydanticowy model ACL
 from api.owm_client import OWMClient, OWMConfig, summarize_human
 
+from agents.protocol import AclMessage
+from agents.protocol.spade_utils import to_spade_message  # już jest w repo
+
 from dotenv import load_dotenv  # pip install python-dotenv
 
 load_dotenv()
@@ -166,6 +169,25 @@ class WeatherAgent(BaseAgent):
         template.set_metadata("performative", "REQUEST")
         template.set_metadata("ontology", "weather")
         self.add_behaviour(beh, template)
+        
+        # --- Advertise capability (plug-and-play) ---
+        try:
+            cap = AclMessage.build_inform_capability(
+                conversation_id="cap-weather",
+                provides=[{"ontology": "weather", "types": ["WEATHER_ADVICE"]}],
+                ontology="system",
+            )
+            # Gdzie wysłać? Na „bus” albo rejestr, jeśli podany:
+            registry_jid = os.getenv("REGISTRY_JID")
+            if registry_jid:
+                await self.send(to_spade_message(cap, registry_jid))
+                _safe_log(self, f"[WeatherAgent] capability announced to {registry_jid}")
+            else:
+                _safe_log(self, "[WeatherAgent] capability ready (no REGISTRY_JID set)")
+        except Exception as e:
+            _safe_log(self, f"[WeatherAgent] capability announce failed: {e}")
+
+
         if hasattr(self, "log"):
             _safe_log(self, "[WeatherAgent] behaviour registered")
 
