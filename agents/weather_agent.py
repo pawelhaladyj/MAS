@@ -4,14 +4,16 @@ import os
 import json
 import asyncio
 from typing import Any, Dict
+import time
 
-from spade.behaviour import CyclicBehaviour
+from spade.behaviour import CyclicBehaviour, OneShotBehaviour
 from spade.template import Template
 from spade.message import Message
 
 from agents.agent import BaseAgent  # Twój bazowy agent (logi, KB, itp.)
 from agents.protocol import AclMessage, Performative  # Pydanticowy model ACL
 from api.owm_client import OWMClient, OWMConfig, summarize_human
+from agents.protocol.acl_messages import AclMessage, Performative
 
 from agents.protocol import AclMessage
 from agents.protocol.spade_utils import to_spade_message  # już jest w repo
@@ -159,37 +161,62 @@ class WeatherAdviceBehav(CyclicBehaviour):
         reply.body = body_out
         await self.send(reply)
 
+class AnnounceCapabilityBehav(OneShotBehaviour):
+    def __init__(self, registry_jid: str):
+        super().__init__()
+        self.registry_jid = registry_jid
+
+    async def run(self):
+        conv = f"cap-weather-{int(time.time())}"
+        acl = AclMessage(
+            performative=Performative.INFORM,
+            conversation_id=conv,
+            ontology="system",
+            language="json",
+            payload={
+                "type": "CAPABILITY",
+                "provides": [{"ontology": "weather", "types": ["WEATHER_ADVICE"]}],
+                "keys": ["weather.WEATHER_ADVICE"],
+                "agent": os.getenv("WEATHER_AGENT_JID"),
+            },
+        )
+        m = Message(to=self.registry_jid)
+        m.thread = conv
+        m.set_metadata("performative", "INFORM")
+        m.set_metadata("ontology", "system")
+        m.set_metadata("language", "json")
+        m.body = acl.to_json()
+
+        try:
+            await self.send(m)
+            _safe_log(self.agent, f"[WeatherAgent] capability announced to {self.registry_jid}")
+        except Exception as e:
+            _safe_log(self.agent, f"[WeatherAgent] capability announce failed: {e}")
+
+        # ⬇⬇⬇ TUTAJ BEZ await
+        self.kill()
+
+
 class WeatherAgent(BaseAgent):
     async def setup(self):
-        if hasattr(self, "log"):
-            _safe_log(self, "[WeatherAgent] starting")
+        _safe_log(self, "[WeatherAgent] starting")
+
+        # rejestrujemy główne zachowanie pogodowe
         beh = WeatherAdviceBehav()
-        # FIPA-ACL przez metadane SPADE
-        template = Template()
-        template.set_metadata("performative", "REQUEST")
-        template.set_metadata("ontology", "weather")
-        self.add_behaviour(beh, template)
-        
-        # --- Advertise capability (plug-and-play) ---
-        try:
-            cap = AclMessage.build_inform_capability(
-                conversation_id="cap-weather",
-                provides=[{"ontology": "weather", "types": ["WEATHER_ADVICE"]}],
-                ontology="system",
-            )
-            # Gdzie wysłać? Na „bus” albo rejestr, jeśli podany:
-            registry_jid = os.getenv("REGISTRY_JID")
-            if registry_jid:
-                await self.send(to_spade_message(cap, registry_jid))
-                _safe_log(self, f"[WeatherAgent] capability announced to {registry_jid}")
-            else:
-                _safe_log(self, "[WeatherAgent] capability ready (no REGISTRY_JID set)")
-        except Exception as e:
-            _safe_log(self, f"[WeatherAgent] capability announce failed: {e}")
+        tpl = Template()
+        tpl.set_metadata("performative", "REQUEST")
+        tpl.set_metadata("ontology", "weather")
+        self.add_behaviour(beh, tpl)
+        _safe_log(self, "[WeatherAgent] behaviour registered")
 
+        # planujemy ogłoszenie capability jako OneShotBehaviour
+        reg_jid = os.getenv("REGISTRY_JID")
+        if reg_jid:
+            self.add_behaviour(AnnounceCapabilityBehav(reg_jid))
+            _safe_log(self, f"[WeatherAgent] scheduling capability announce → {reg_jid}")
+        else:
+            _safe_log(self, "[WeatherAgent] REGISTRY_JID not set; skipping capability announce")
 
-        if hasattr(self, "log"):
-            _safe_log(self, "[WeatherAgent] behaviour registered")
 
 if __name__ == "__main__":
     # (opcjonalnie) autoload .env
