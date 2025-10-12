@@ -13,14 +13,38 @@ from agents.agent import BaseAgent  # Twój bazowy agent (logi, KB, itp.)
 from agents.protocol import AclMessage, Performative  # Pydanticowy model ACL
 from api.owm_client import OWMClient, OWMConfig, summarize_human
 
+from dotenv import load_dotenv  # pip install python-dotenv
+
+load_dotenv()
+    
 WEATHER_TYPE = "WEATHER_ADVICE"
+
+def _safe_log(target, msg: str):
+    """
+    Delikatny logger: jeśli target.log jest funkcją → wywołaj,
+    jeśli ma .info → użyj, w przeciwnym razie print.
+    """
+    log = getattr(target, "log", None)
+    if callable(log):
+        try:
+            log(msg)
+            return
+        except Exception:
+            pass
+    if hasattr(log, "info"):
+        try:
+            log.info(msg)
+            return
+        except Exception:
+            pass
+    print(msg)
+
 
 class WeatherAdviceBehav(CyclicBehaviour):
     async def on_start(self):
         self.owm = OWMClient(OWMConfig(api_key=os.environ["OWM_API_KEY"]))
         if hasattr(self.agent, "log"):
-            self.agent.log.info("[Weather] behaviour started")
-
+            _safe_log(self.agent, "[Weather] behaviour started")
     async def on_end(self):
         await self.owm.aclose()
 
@@ -64,7 +88,12 @@ class WeatherAdviceBehav(CyclicBehaviour):
         place_name = f'{c0.get("name") or place}' + (f", {c0.get('country')}" if c0.get("country") else "")
 
         # Prognoza
-        fc = await self.owm.forecast_daily(lat, lon, days=days)
+        # agents/weather_agent.py  (wewnątrz async def run, tuż przed: title_and_text = ...)
+        try:
+            fc = await self.owm.forecast_daily(lat, lon, days=days)
+        except Exception as e:
+            await self._reply_error(msg, acl, f"OpenWeather błąd: {e}")
+            return
         title_and_text, meta = summarize_human(place_name, fc["provider"], fc["data"], days)
         title, text = title_and_text.split("\n", 1) if "\n" in title_and_text else (title_and_text, "")
 
@@ -108,7 +137,7 @@ class WeatherAdviceBehav(CyclicBehaviour):
 
         await self.send(reply)
         if hasattr(self.agent, "log"):
-            self.agent.log.info(f"[Weather] INFORM sent to {msg.sender} for place={place!r}")
+            _safe_log(self.agent, f"[Weather] INFORM sent to {msg.sender} for place={place!r}")
 
     async def _reply_error(self, msg: Message, acl: Dict[str, Any], err: str):
         payload = {"type": WEATHER_TYPE, "error": err}
@@ -130,7 +159,7 @@ class WeatherAdviceBehav(CyclicBehaviour):
 class WeatherAgent(BaseAgent):
     async def setup(self):
         if hasattr(self, "log"):
-            self.log.info("[WeatherAgent] starting")
+            _safe_log(self, "[WeatherAgent] starting")
         beh = WeatherAdviceBehav()
         # FIPA-ACL przez metadane SPADE
         template = Template()
@@ -138,20 +167,33 @@ class WeatherAgent(BaseAgent):
         template.set_metadata("ontology", "weather")
         self.add_behaviour(beh, template)
         if hasattr(self, "log"):
-            self.log.info("[WeatherAgent] behaviour registered")
+            _safe_log(self, "[WeatherAgent] behaviour registered")
 
 if __name__ == "__main__":
-    # Klasycznie: konfiguracja z ENV
-    jid = os.environ.get("WEATHER_AGENT_JID")
-    pwd = os.environ.get("WEATHER_AGENT_PASSWORD")
+    # (opcjonalnie) autoload .env
+    try:
+        from dotenv import load_dotenv  # pip install python-dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+    jid = os.getenv("WEATHER_AGENT_JID")
+    pwd = os.getenv("WEATHER_AGENT_PASSWORD")
     if not jid or not pwd:
         raise SystemExit("WEATHER_AGENT_JID/WEATHER_AGENT_PASSWORD nie ustawione")
-    agent = WeatherAgent(jid, pwd)
-    future = agent.start(auto_register=True)
-    future.result()
-    try:
-        asyncio.get_event_loop().run_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        agent.stop()
+
+    async def _amain():
+        agent = WeatherAgent(jid, pwd)
+        # WAŻNE: w nowych SPADE to korutyna → trzeba await
+        await agent.start(auto_register=True)
+        if hasattr(agent, "log"):
+            _safe_log(agent, f"[WeatherAgent] started as {jid}")
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+        await agent.stop()
+
+    asyncio.run(_amain())
+

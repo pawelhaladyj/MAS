@@ -1,8 +1,10 @@
+# agents/protocol/acl_messages.py
 from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
-from datetime import datetime, timezone    # ⬅ NEW
+from datetime import datetime, timezone
+
 
 class Performative(str, Enum):
     REQUEST = "REQUEST"
@@ -13,6 +15,31 @@ class Performative(str, Enum):
     CONFIRM = "CONFIRM"
     # (opcjonalnie w przyszłości: CANCEL)
 
+
+# Jedno źródło prawdy dla dozwolonych zestawów performatywa ↔ typ payloadu
+ALLOWED_PERFORMATIVES_BY_TYPE: Dict[str, set[Performative]] = {
+    # system / ogólne
+    "PING": {Performative.REQUEST},
+    "ASK": {Performative.REQUEST},
+    "METRICS_EXPORT": {Performative.REQUEST},
+    "USER_MSG": {Performative.REQUEST},
+
+    # fakty i odpowiedzi
+    "FACT": {Performative.INFORM},
+    "ACK": {Performative.INFORM},
+    "OFFER": {Performative.INFORM},
+    "CONFIRM": {Performative.INFORM},
+    "PRESENTER_REPLY": {Performative.INFORM},
+
+    # pogoda i registry (plug-and-play)
+    "WEATHER_ADVICE": {Performative.REQUEST, Performative.INFORM},
+    "CAPABILITY": {Performative.INFORM},
+
+    # porażki
+    "ERROR": {Performative.FAILURE},
+}
+
+
 class AclMessage(BaseModel):
     performative: Performative = Field(..., description="FIPA-ACL performative")
     conversation_id: str = Field(..., min_length=1, description="Conversation/session identifier")
@@ -20,7 +47,7 @@ class AclMessage(BaseModel):
     language: str = Field("json", min_length=1, description="Content language (default: json)")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Message content")
 
-    # ⬇⬇⬇ NEW meta
+    # meta
     schema_version: str = Field("1.0.0", description="ACL schema version")
     ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat(), description="UTC timestamp ISO8601")
 
@@ -31,40 +58,56 @@ class AclMessage(BaseModel):
             raise ValueError("conversation_id must be non-empty and trimmed")
         return v
 
-    # ⬇⬇⬇ NEW: lekka kontrola spójności performatywy ↔ typ payloadu (jeśli payload['type'] istnieje)
     @field_validator("payload")
     @classmethod
     def performative_payload_consistency(cls, payload: Dict[str, Any], info):
-        perf = info.data.get("performative")
+        perf: Performative = info.data.get("performative")
         ptype = payload.get("type")
         if ptype is None:
-            return payload  # nic nie narzucamy, kompatybilnie
+            # kompatybilnie: nie wymuszamy, gdy brak typu
+            return payload
 
-        # ⬇⬇⬇ DOPISKA: rozszerzamy dozwolone typy o WEATHER_ADVICE
-        allowed_for_request = {"PING", "ASK", "METRICS_EXPORT", "USER_MSG", "WEATHER_ADVICE"}
-        allowed_for_inform  = {"ACK", "FACT", "OFFER", "CONFIRM", "PRESENTER_REPLY", "WEATHER_ADVICE"}
+        # Specjalny przypadek: FAILURE musi nieść ERROR
+        if perf == Performative.FAILURE:
+            if ptype != "ERROR":
+                raise ValueError("FAILURE must carry payload.type=ERROR")
+            return payload
 
-        if perf == Performative.REQUEST and ptype not in allowed_for_request:
-            raise ValueError(f"REQUEST not allowed for payload.type={ptype}")
-        if perf == Performative.INFORM and ptype not in allowed_for_inform:
-            raise ValueError(f"INFORM not allowed for payload.type={ptype}")
-        if perf == Performative.FAILURE and ptype != "ERROR":
-            raise ValueError("FAILURE must carry payload.type=ERROR")
+        allowed = ALLOWED_PERFORMATIVES_BY_TYPE.get(ptype, set())
+        if perf not in allowed:
+            raise ValueError(f"{perf} not allowed for payload.type={ptype}")
         return payload
 
-    # helpery budujące typowe wiadomości (zostawiamy istniejące)
+    # ===== Helpery budujące typowe wiadomości =====
+
     @classmethod
     def build_request(cls, conversation_id: str, payload: Dict[str, Any], *, ontology: str = "default") -> "AclMessage":
-        return cls(performative=Performative.REQUEST, conversation_id=conversation_id, ontology=ontology, payload=payload)
+        return cls(
+            performative=Performative.REQUEST,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload=payload,
+        )
 
     @classmethod
     def build_inform(cls, conversation_id: str, payload: Dict[str, Any], *, ontology: str = "default") -> "AclMessage":
-        return cls(performative=Performative.INFORM, conversation_id=conversation_id, ontology=ontology, payload=payload)
+        return cls(
+            performative=Performative.INFORM,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload=payload,
+        )
 
-    # ⬇⬇⬇ NEW: fabryka błędów (FAILURE + ERROR)
     @classmethod
-    def build_failure(cls, conversation_id: str, code: str, message: str, details: Optional[Dict[str, Any]] = None,
-                      *, ontology: str = "default") -> "AclMessage":
+    def build_failure(
+        cls,
+        conversation_id: str,
+        code: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+        *,
+        ontology: str = "default",
+    ) -> "AclMessage":
         return cls(
             performative=Performative.FAILURE,
             conversation_id=conversation_id,
@@ -79,10 +122,11 @@ class AclMessage(BaseModel):
     @classmethod
     def from_json(cls, data: str) -> "AclMessage":
         return cls.model_validate_json(data)
-    
+
+    # ===== Dodatkowe fabryki używane w projekcie =====
+
     @classmethod
     def build_request_ask(cls, conversation_id: str, need: list[str], *, ontology: str = "default") -> "AclMessage":
-        # minimalna walidacja listy (pełną zrobimy później)
         if not need or len({*need}) != len(need):
             raise ValueError("ASK.need must be non-empty and unique")
         return cls(
@@ -111,21 +155,16 @@ class AclMessage(BaseModel):
             ontology=ontology,
             payload={"type": "ACK", "echo": echo or {}},
         )
-        
+
     @classmethod
-    def build_request_metrics_export(
-        cls,
-        conversation_id: str,
-        *,
-        ontology: str = "system",
-    ) -> "AclMessage":
+    def build_request_metrics_export(cls, conversation_id: str, *, ontology: str = "system") -> "AclMessage":
         return cls(
             performative=Performative.REQUEST,
             conversation_id=conversation_id,
             ontology=ontology,
             payload={"type": "METRICS_EXPORT"},
         )
-    
+
     @classmethod
     def build_request_user_msg(
         cls,
@@ -164,5 +203,21 @@ class AclMessage(BaseModel):
             payload=payload,
         )
 
-
-
+    @classmethod
+    def build_inform_capability(
+        cls,
+        conversation_id: str,
+        provides: list[dict[str, Any]],
+        *,
+        ontology: str = "system",
+    ) -> "AclMessage":
+        """
+        provides: np. [{"ontology": "weather", "types": ["WEATHER_ADVICE"]}]
+        """
+        payload = {"type": "CAPABILITY", "provides": provides}
+        return cls(
+            performative=Performative.INFORM,
+            conversation_id=conversation_id,
+            ontology=ontology,
+            payload=payload,
+        )

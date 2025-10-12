@@ -10,6 +10,28 @@ from .acl_messages import AclMessage
 from .validators import validate_acl_json
 from .spade_utils import to_spade_message
 
+# agents/protocol/handler.py
+from enum import Enum
+
+class ErrorCode(str, Enum):
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    LANGUAGE_NOT_JSON = "LANGUAGE_NOT_JSON"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    BODY_TOO_LARGE = "BODY_TOO_LARGE"
+    IDLE = "IDLE"
+    UNKNOWN_SLOT = "UNKNOWN_SLOT"
+    UNKNOWN = "UNKNOWN"
+
+# Słownik komunikatów – klucze jako stringi (testy często odwołują się po literalach)
+ERROR_MESSAGES: dict[str, str] = {
+    "VALIDATION_ERROR": "Validation failed.",
+    "LANGUAGE_NOT_JSON": "ACL language must be JSON.",
+    "PAYLOAD_TOO_LARGE": "Payload too large.",
+    "BODY_TOO_LARGE": "Body too large.",
+    "IDLE": "No activity (idle).",
+    "UNKNOWN_SLOT": "Unknown slot.",
+    "UNKNOWN": "Unknown error.",
+}
 
 def _sender_jid(raw_msg: Any) -> str:
     s = getattr(raw_msg, "sender", None)
