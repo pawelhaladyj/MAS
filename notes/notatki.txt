@@ -1,1 +1,17 @@
 sudo docker exec -it ejabberd /opt/ejabberd/bin/ejabberdctl register user xmpp.pawelhaladyj.pl pass
+
+
+
+
+
+python -m agents.registry_agent
+
+python -m agents.extractor_agent
+
+python -m agents.weather_agent
+
+python -m agents.coordinator
+
+python -m agents.presenter
+
+uvicorn api.server:app --host 127.0.0.1 --port 8000 --reload

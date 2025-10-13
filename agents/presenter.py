@@ -91,66 +91,47 @@ class PresenterAgent(BaseAgent):
             return
 
         if ptype == "ASK":
-            need = payload["need"][0]
+            needs = payload.get("need") or []
             session_id = payload.get("session_id", os.getenv("CONV_ID", "demo-1"))
 
-            # przejście INIT → GATHER (stan sesji do KB)
-            try:
-                set_session_state(session_id, "GATHER")
-            except Exception as e:
-                self.log(f"[warn] failed to set FSM state to GATHER: {e}")
+            # heurystyka: jeśli 1 slot → krótki prompt, jeśli wiele → lista pytań
+            def q_for(slot: str) -> str:
+                return {
+                    "budget_total":        "Jaki masz budżet całkowity (PLN)?",
+                    "dates_start":         "Od kiedy chcesz lecieć (RRRR-MM-DD)?",
+                    "nights":              "Na ile nocy?",
+                    "origin_city":         "Z jakiego miasta wylot?",
+                    "transport_mode":      "Samolot, auto, pociąg?",
+                    "passport_ok":         "Czy paszport jest ważny (tak/nie)?",
+                    "destination_pref":    "Preferowana destynacja/region?",
+                    "weather_min_c":       "Minimalna temp. dzienna (°C)?",
+                    "party_adults":        "Ilu dorosłych?",
+                    "party_children_ages": "Wiek dzieci (np. 13,11)?",
+                    "style":               "Styl (relaks, zwiedzanie, aktywnie)?",
+                    "hotel_stars_min":     "Min. liczba gwiazdek hotelu?",
+                    "board":               "Wyżywienie (BB/HB/AI)?",
+                    "must_haves":          "Warunki konieczne (np. aquapark)?",
+                    "risk_profile":        "Niski/średni/wysoki (ryzyka)?",
+                }.get(slot, f"Podaj wartość dla {slot}:")
 
-            # Luźna podpowiedź dla człowieka (bez ankiety)
-            human_prompt = {
-                "budget_total":        "Jaki masz budżet całkowity (PLN)?",
-                "dates_start":         "Od kiedy chcesz lecieć (RRRR-MM-DD)?",
-                "nights":              "Na ile nocy?",
-                "origin_city":         "Z jakiego miasta wylot?",
-                "transport_mode":      "Samolot, auto, pociąg?",
-                "passport_ok":         "Czy paszport jest ważny (tak/nie)?",
-                "destination_pref":    "Preferowana destynacja/region?",
-                "weather_min_c":       "Minimalna temp. dzienna (°C)?",
-                "party_adults":        "Ilu dorosłych?",
-                "party_children_ages": "Wiek dzieci (np. 13,11)?",
-                "style":               "Styl (relaks, zwiedzanie, aktywnie)?",
-                "hotel_stars_min":     "Min. liczba gwiazdek hotelu?",
-                "board":               "Wyżywienie (BB/HB/AI)?",
-                "must_haves":          "Warunki konieczne (np. aquapark)?",
-                "risk_profile":        "Niski/średni/wysoki? (ryzyka)",
-            }.get(need, f"Podaj wartość dla {need}:")
+            if len(needs) == 1:
+                human_prompt = q_for(needs[0])
+            else:
+                human_prompt = "Dopytam, żeby lepiej trafić:\n" + "\n".join(f"• {q_for(s)}" for s in needs)
+
             self.log(f"[Presenter→User] {human_prompt}")
 
-            # TRYB DEMO (opcjonalny): auto-uzupełnianie tylko gdy DEMO_AUTOFILL=1
-            if os.getenv("DEMO_AUTOFILL") == "1":
-                mock_values = {
-                    "budget_total":        "12000",
-                    "dates_start":         "2026-02-10",
-                    "nights":              "7",
-                    "origin_city":         "Lublin",
-                    "transport_mode":      "samolot",
-                    "passport_ok":         "tak",
-                    "destination_pref":    "Egipt",
-                    "weather_min_c":       "22",
-                    "party_adults":        "2",
-                    "party_children_ages": "13,11",
-                    "style":               "relaks",
-                    "hotel_stars_min":     "5",
-                    "board":               "AI",
-                    "must_haves":          "aquapark",
-                    "risk_profile":        "średni",
-                }
-                value = mock_values.get(need)
-                if value is not None:
-                    fact = AclMessage.build_inform_fact(
-                        conversation_id=session_id,
-                        slot=need,
-                        value=value,
-                        ontology=acl.ontology or "default",
-                    )
-                    await self.send_acl(behaviour, fact, to_jid=settings.coordinator_jid)
-                    self.log(f"sent FACT (ACL) slot='{need}' value='{value}' (demo)")
-            # w trybie normalnym: kończymy na podpowiedzi do człowieka (bez wysyłania FACT)
+            reply = AclMessage.build_inform_presenter_reply(
+                conversation_id=acl.conversation_id,
+                text=human_prompt,
+                ontology=acl.ontology or "ui",
+                session_id=session_id,
+            )
+            await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
+            self.log(f"sent PRESENTER_REPLY (ASK→prompt)")
             return
+
+
 
         if ptype == "USER_MSG":
             text = (payload or {}).get("text", "").strip()
@@ -193,21 +174,24 @@ class PresenterAgent(BaseAgent):
             return
 
 
-        
         if ptype == "OFFER":
-            prop = payload.get("proposal", {})
-            head = prop.get("headline", "Mam jedną luźną propozycję")
+            # ✅ weź proposal z payloadu zamiast nieistniejącej zmiennej "prop"
+            prop = payload.get("proposal") or {}
+            head = prop.get("headline", "Mam jedną propozycję")
             notes = prop.get("notes", "")
-            self.log(f"[Presenter→User] {head} — {notes}")
+            text = f"{head}. {notes}".strip()
+
+            reply = AclMessage.build_inform_presenter_reply(
+                conversation_id=acl.conversation_id,
+                text=text,
+                ontology=acl.ontology or "ui",
+                session_id=payload.get("session_id") or acl.conversation_id,
+            )
+            # → odpisujemy KOORDYNATOROWI (nadawcy), a on przekaże to do Bridge
+            await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
+            self.log(f"sent PRESENTER_REPLY (OFFER→text): {text}")
             return
 
-        if ptype == "CONFIRM":
-            slot = payload.get("slot")
-            status = payload.get("status")
-            self.log(f"CONFIRM: slot='{slot}' status='{status}'")
-            return
-
-        self.log(f"OTHER payload: {payload}")
         
 def set_session_state(session_id: str, state: str):
     # prosty zapis stanu do KB w kanonicznym slocie

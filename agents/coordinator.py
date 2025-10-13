@@ -88,6 +88,11 @@ class CoordinatorAgent(BaseAgent):
             return
 
         if ptype == "FACT":
+            sys_slot = payload.get("slot")
+            if sys_slot and sys_slot.startswith("capability."):
+                self.log(f"ignored system FACT '{sys_slot}'")
+                return
+            
             slot = payload.get("slot")
             value = payload.get("value")
             source = payload.get("source", "user")
@@ -150,13 +155,13 @@ class CoordinatorAgent(BaseAgent):
                         need=missing,
                         ontology=acl.ontology or "default",
                     )
-                    await self.send_acl(behaviour, ask, to_jid=str(spade_msg.sender))
+                    await self.send_acl(behaviour, ask, to_jid=settings.presenter_jid)
                     self.log(f"[NLU] asked for missing: {missing}")
 
                 # (opcjonalnie) od razu wyślij świeżą propozycję
                 offer = make_offer(conv_id, acl.ontology or "default")
-                await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
-                self.log("[NLU] offered update after extraction")
+                await self.send_acl(behaviour, offer, to_jid=settings.presenter_jid)
+                self.log("[NLU] offered update after extraction (to Presenter)")
                 return
             # --- KONIEC BLOKU 'nlu.extraction' ---
 
@@ -212,8 +217,8 @@ class CoordinatorAgent(BaseAgent):
                 
                 # ⬇ NOWE: lekka propozycja na bazie nowych faktów (bez dopytywania)
                 offer = make_offer(conv_id, acl.ontology or "default")
-                await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
-                self.log("offered update based on user prefs")
+                await self.send_acl(behaviour, offer, to_jid=settings.presenter_jid)
+                self.log("offered update based on user prefs (to Presenter)")
                 return
 
             except Exception as e:
@@ -230,45 +235,35 @@ class CoordinatorAgent(BaseAgent):
             except Exception:
                 pass
 
-            # ---- NOWE: NLU przez Extractor (koordynator pyta Registry) ----
-            context = ""  # MVP: można później zaciągnąć ostatnie fakty z KB i zbudować kontekst
-            extractor_jid = await self._find_provider(behaviour, NLU_CAP_KEY)
+            # 1) natychmiast do Presentera (żeby user dostał odpowiedź)
+            forward = AclMessage.build_request_user_msg(
+                conversation_id=conv_id,
+                text=text,
+                ontology="ui",
+                session_id=session_id,
+            )
+            await self.send_acl(behaviour, forward, to_jid=settings.presenter_jid)
+            self.log("forwarded USER_MSG to Presenter")
 
+            # 2) równolegle NLU → ewentualne ASK/OFFER też polecą do Presentera
+            context = ""
+            extractor_jid = await self._find_provider(behaviour, NLU_CAP_KEY)
             if extractor_jid:
                 extraction = await self._ask_extractor(
                     behaviour, extractor_jid, conv_id, session_id, text, context, WANTED_SLOTS
                 )
                 if extraction:
-                    # wstrzykuj wynik tak, jakby przyszedł z sieci (ponowne użycie ścieżki FACT/nlu.extraction)
                     inj = AclMessage.build_inform(
                         conversation_id=conv_id,
                         payload={"type": "FACT", "slot": "nlu.extraction", "value": extraction},
                         ontology=NLU_ONTOLOGY,
                     )
-                    # ważne: przekazujemy do tej samej kolejki zachowania, by użyć powyższego bloku
                     await self.handle_acl(behaviour, spade_msg, inj)
-                    return
-            # ---- KONIEC NOWEGO BLOKU NLU ----
-            
-            # ... po ewentualnym NLU/injection i przed fallbackiem OFFER:
-            fwd = AclMessage.build_request_user_msg(
-                conversation_id=conv_id,
-                text=text,
-                ontology=acl.ontology or "ui",
-                session_id=session_id,
-            )
-            await self.send_acl(behaviour, fwd, to_jid=settings.presenter_jid)
-            self.log("forwarded USER_MSG to Presenter")
             return
 
-            # Fallback: zachowanie jak dotąd – szybka, luźna propozycja
-            offer = make_offer(conv_id, acl.ontology or "default")
-            await self.send_acl(behaviour, offer, to_jid=str(spade_msg.sender))
-            self.log("sent OFFER in response to USER_MSG")
-            return
 
         # Forward rzeczy "dla użytkownika" do Bridge (to on gada z API)
-        if ptype in {"PRESENTER_REPLY", "TO_USER", "OFFER"}:
+        if ptype in {"PRESENTER_REPLY", "TO_USER"}:
             await self.send_acl(behaviour, acl, to_jid=settings.api_bridge_jid)
             self.log(f"routed {ptype} to Bridge")
             return
@@ -299,6 +294,7 @@ class CoordinatorAgent(BaseAgent):
 
         # Inne typy — dyscyplina: tylko log.
         self.log(f"OTHER payload: {payload}")
+
         
     async def _dispatch_unrelated(self, behaviour, spade_msg):
         """

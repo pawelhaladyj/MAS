@@ -99,17 +99,17 @@ async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
         self.log(f"ACK: {payload}")
         return
 
-    # 1) Wszystko, co jest „dla użytkownika”, przepuść do API outbox
-    if ptype in {"PRESENTER_REPLY", "TO_USER", "OFFER"}:
+    if ptype in {"PRESENTER_REPLY", "ASK", "OFFER", "CONFIRM", "ERROR"}:
         try:
             await self._outbox.put({
                 "conversation_id": acl.conversation_id,
                 "payload": payload,
             })
-            self.log(f"delivered {ptype} to API outbox")
+            self.log(f"[bridge] delivered to API outbox: {payload}")
         except Exception as e:
             self.log(f"[bridge] failed to put reply into outbox: {e}")
         return
+
 
     # 2) USER_MSG nie powinien przychodzić z Koordynatora do Bridge (to kierunek UI→Bridge)
     #    więc tylko zaloguj:
