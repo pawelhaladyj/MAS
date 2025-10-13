@@ -95,29 +95,10 @@ class PresenterAgent(BaseAgent):
             session_id = payload.get("session_id", os.getenv("CONV_ID", "demo-1"))
 
             # heurystyka: jeśli 1 slot → krótki prompt, jeśli wiele → lista pytań
-            def q_for(slot: str) -> str:
-                return {
-                    "budget_total":        "Jaki masz budżet całkowity (PLN)?",
-                    "dates_start":         "Od kiedy chcesz lecieć (RRRR-MM-DD)?",
-                    "nights":              "Na ile nocy?",
-                    "origin_city":         "Z jakiego miasta wylot?",
-                    "transport_mode":      "Samolot, auto, pociąg?",
-                    "passport_ok":         "Czy paszport jest ważny (tak/nie)?",
-                    "destination_pref":    "Preferowana destynacja/region?",
-                    "weather_min_c":       "Minimalna temp. dzienna (°C)?",
-                    "party_adults":        "Ilu dorosłych?",
-                    "party_children_ages": "Wiek dzieci (np. 13,11)?",
-                    "style":               "Styl (relaks, zwiedzanie, aktywnie)?",
-                    "hotel_stars_min":     "Min. liczba gwiazdek hotelu?",
-                    "board":               "Wyżywienie (BB/HB/AI)?",
-                    "must_haves":          "Warunki konieczne (np. aquapark)?",
-                    "risk_profile":        "Niski/średni/wysoki (ryzyka)?",
-                }.get(slot, f"Podaj wartość dla {slot}:")
-
             if len(needs) == 1:
-                human_prompt = q_for(needs[0])
+                human_prompt = prompt_for_slot(needs[0])
             else:
-                human_prompt = "Dopytam, żeby lepiej trafić:\n" + "\n".join(f"• {q_for(s)}" for s in needs)
+                human_prompt = "Dopytam, żeby lepiej trafić:\n" + "\n".join(f"• {prompt_for_slot(s)}" for s in needs)
 
             self.log(f"[Presenter→User] {human_prompt}")
 
@@ -128,10 +109,48 @@ class PresenterAgent(BaseAgent):
                 session_id=session_id,
             )
             await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
-            self.log(f"sent PRESENTER_REPLY (ASK→prompt)")
+            self.log("sent PRESENTER_REPLY (ASK→prompt)")
             return
+        
+        if ptype == "COMPOSE":
+            purpose = (payload.get("purpose") or "offer_hint").lower()
+            session_id = payload.get("session_id") or acl.conversation_id
 
+            # Spróbuj AI jeśli włączone w settings; fallback na krótkie teksty
+            ai_enabled = getattr(settings, "presenter_ai_enabled", os.getenv("AI_ENABLED", "0") == "1")
+            text = None
 
+            if ai_enabled:
+                system = (
+                    "Jesteś kumplem-doradcą podróży: krótko, po polsku, bez list wypunktowanych, "
+                    "jedna wiadomość. Dopytuj naturalnie krok po kroku."
+                )
+                user = f"Cel: {purpose}. Odpowiedz zwięźle w 1–2 zdaniach."
+                maybe = chat_reply(system, user)
+                if maybe:
+                    text = maybe.strip()
+
+            if not text:
+                if purpose == "greeting":
+                    text = getattr(
+                        settings,
+                        "presenter_greeting_text",
+                        "Hej! Opowiedz, dokąd i kiedy chcesz jechać — ogarniemy resztę 🙂",
+                    )
+                elif purpose in ("offer_hint", "followup"):
+                    text = "Dopytam tylko o kilka rzeczy (budżet, daty i miasto startu), żeby dobrze trafić z propozycją."
+                else:
+                    text = "Jasne! Napisz proszę budżet, termin i skąd ruszasz — pomogę doprecyzować."
+
+            reply = AclMessage.build_inform_presenter_reply(
+                conversation_id=acl.conversation_id,
+                text=text,
+                ontology=acl.ontology or "ui",
+                session_id=session_id,
+            )
+            await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
+            self.log(f"sent PRESENTER_REPLY (COMPOSE→text): {text}")
+            return
 
         if ptype == "USER_MSG":
             text = (payload or {}).get("text", "").strip()
@@ -143,9 +162,10 @@ class PresenterAgent(BaseAgent):
             except Exception as e:
                 self.log(f"[warn] failed to set FSM state to CHAT: {e}")
 
-            # Spróbuj AI TYLKO jeśli AI_ENABLED=1
+            # Spróbuj AI jeśli włączone w settings; brak twardych ENV
             reply_text = None
-            if os.getenv("AI_ENABLED", "0") == "1" and text:
+            ai_enabled = getattr(settings, "presenter_ai_enabled", os.getenv("AI_ENABLED", "0") == "1")
+            if ai_enabled and text:
                 system = (
                     "Jesteś kumplem-doradcą podróży: luz, życzliwość, bez ankiety. "
                     "Dopytuj tylko naturalnie, krok po kroku. Odpowiadaj po polsku, krótko."
@@ -154,14 +174,19 @@ class PresenterAgent(BaseAgent):
                 if maybe:
                     reply_text = maybe
 
-            # Fallback – dotychczasowe „kumplowskie” odpowiedzi
+            # Fallback – krótkie, konfigurowalne
             if not reply_text:
                 if not text:
-                    reply_text = "Hej! Opowiedz, dokąd i kiedy chcesz lecieć — ogarniemy resztę 🙂"
+                    reply_text = getattr(
+                        settings,
+                        "presenter_greeting_text",
+                        "Hej! Opowiedz, dokąd i kiedy chcesz jechać — ogarniemy resztę 🙂",
+                    )
                 elif "cześć" in text.lower() or "hej" in text.lower():
-                    reply_text = "Cześć! Masz już jakieś kierunki w głowie czy najpierw pogadamy o budżecie i klimacie?"
+                    reply_text = "Cześć! Wolisz najpierw kierunek czy ustalimy budżet i klimat wyjazdu?"
                 else:
-                    reply_text = f"Brzmi spoko: „{text}”. Chcesz bardziej chill czy aktywnie? I jaki mniej więcej budżet?"
+                    reply_text = "Brzmi spoko! Wolisz raczej chill czy aktywnie? I jaki mniej więcej budżet?"
+
 
             reply = AclMessage.build_inform_presenter_reply(
                 conversation_id=acl.conversation_id,
@@ -175,19 +200,20 @@ class PresenterAgent(BaseAgent):
 
 
         if ptype == "OFFER":
-            # ✅ weź proposal z payloadu zamiast nieistniejącej zmiennej "prop"
-            prop = payload.get("proposal") or {}
-            head = prop.get("headline", "Mam jedną propozycję")
-            notes = prop.get("notes", "")
+            proposal = payload.get("proposal") or {}
+            head = proposal.get("headline") or getattr(
+                settings, "presenter_default_offer_headline", "Mam jedną propozycję na start"
+            )
+            notes = proposal.get("notes") or getattr(
+                settings, "presenter_default_offer_notes", "Luźna podpowiedź — możemy iść w inną stronę, jeśli wolisz."
+            )
             text = f"{head}. {notes}".strip()
-
             reply = AclMessage.build_inform_presenter_reply(
                 conversation_id=acl.conversation_id,
                 text=text,
                 ontology=acl.ontology or "ui",
                 session_id=payload.get("session_id") or acl.conversation_id,
             )
-            # → odpisujemy KOORDYNATOROWI (nadawcy), a on przekaże to do Bridge
             await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
             self.log(f"sent PRESENTER_REPLY (OFFER→text): {text}")
             return
@@ -197,6 +223,20 @@ def set_session_state(session_id: str, state: str):
     # prosty zapis stanu do KB w kanonicznym slocie
     put_fact(session_id, "session_state", {"value": state})
 
+def prompt_for_slot(slot: str) -> str:
+    labels = {
+        "budget_total":        "Jaki masz budżet całkowity (PLN)?",
+        "dates_start":         "Od kiedy chcesz wyruszyć (RRRR-MM-DD)?",
+        "nights":              "Na ile nocy?",
+        "origin_city":         "Z jakiego miasta start?",
+        "destination_pref":    "Preferowana destynacja/region?",
+        "style":               "Styl (relaks, zwiedzanie, aktywnie)?",
+        "weather_min_c":       "Minimalna temp. dzienna (°C)?",
+        "party_adults":        "Ilu dorosłych?",
+        "party_children_ages": "Wiek dzieci (np. 13,11)?",
+        # resztę możesz dopisywać bez zmiany logiki
+    }
+    return labels.get(slot, f"Podaj wartość dla: {slot}")
 
 async def main():
     # prosty healthcheck prezentera
