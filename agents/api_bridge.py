@@ -26,7 +26,7 @@ class ApiBridgeAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         self._inbox = inbox                      # asyncio.Queue → przychodzi z API
         self._outbox = outbox                    # asyncio.Queue → wraca do API
-        self.default_target_jid = settings.presenter_jid
+        self.default_target_jid = settings.coordinator_jid
 
     class Inbox(BaseAgent.Inbox):
         """Standardowy odbiornik ACL (gdyby ktoś pisał do mostka po XMPP)."""
@@ -70,42 +70,53 @@ class ApiBridgeAgent(BaseAgent):
         self.add_behaviour(self.BridgePump())
         self.log("starting")
 
-    async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
-        payload = acl.payload or {}
-        ptype = payload.get("type")
+    # w agents/api_bridge.py (upewnij się, że na górze masz: from agents.common.config import settings)
 
-        if not acl_language_is_json(acl):
-            return
+async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+    payload = acl.payload or {}
+    ptype = payload.get("type")
 
-        if ptype == "PING":
-            ack = AclMessage.build_inform_ack(
-                conversation_id=acl.conversation_id,
-                echo={"type": "PING"},
-            )
-            await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
-            self.log("acked PING")
-            return
+    # 0) twarda zasada: Bridge rozmawia tylko z Koordynatorem
+    sender_bare = str(spade_msg.sender).split("/", 1)[0]
+    if sender_bare != settings.coordinator_jid:
+        self.log(f"[bridge] drop frame from non-coordinator: {sender_bare}")
+        return
 
-        if ptype == "ACK":
-            self.log(f"ACK: {payload}")
-            return
+    if not acl_language_is_json(acl):
+        return
 
-        if ptype == "PRESENTER_REPLY":
-            # Przekaż odpowiedź do API przez outbox
-            try:
-                await self._outbox.put({
-                    "conversation_id": acl.conversation_id,
-                    "payload": payload,
-                })
-                self.log(f"delivered PRESENTER_REPLY to API outbox: {payload}")
-            except Exception as e:
-                self.log(f"[bridge] failed to put reply into outbox: {e}")
-            return
+    # (opcjonalnie) zostaw PING/ACK — bywa przydatne przy healthcheckach
+    if ptype == "PING":
+        ack = AclMessage.build_inform_ack(
+            conversation_id=acl.conversation_id,
+            echo={"type": "PING"},
+        )
+        await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
+        self.log("acked PING")
+        return
 
-        if ptype == "USER_MSG":
-            txt = payload.get("text", "")
-            sess = payload.get("session_id")
-            self.log(f"[BRIDGE] USER_MSG via XMPP: {txt!r} (session={sess})")
-            return
+    if ptype == "ACK":
+        self.log(f"ACK: {payload}")
+        return
 
-        self.log(f"OTHER payload: {payload}")
+    # 1) Wszystko, co jest „dla użytkownika”, przepuść do API outbox
+    if ptype in {"PRESENTER_REPLY", "TO_USER", "OFFER"}:
+        try:
+            await self._outbox.put({
+                "conversation_id": acl.conversation_id,
+                "payload": payload,
+            })
+            self.log(f"delivered {ptype} to API outbox")
+        except Exception as e:
+            self.log(f"[bridge] failed to put reply into outbox: {e}")
+        return
+
+    # 2) USER_MSG nie powinien przychodzić z Koordynatora do Bridge (to kierunek UI→Bridge)
+    #    więc tylko zaloguj:
+    if ptype == "USER_MSG":
+        txt = payload.get("text", "")
+        sess = payload.get("session_id")
+        self.log(f"[bridge] unexpected USER_MSG from coordinator: {txt!r} (session={sess})")
+        return
+
+    self.log(f"[bridge] OTHER payload from coordinator: {payload}")

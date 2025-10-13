@@ -249,6 +249,17 @@ class CoordinatorAgent(BaseAgent):
                     await self.handle_acl(behaviour, spade_msg, inj)
                     return
             # ---- KONIEC NOWEGO BLOKU NLU ----
+            
+            # ... po ewentualnym NLU/injection i przed fallbackiem OFFER:
+            fwd = AclMessage.build_request_user_msg(
+                conversation_id=conv_id,
+                text=text,
+                ontology=acl.ontology or "ui",
+                session_id=session_id,
+            )
+            await self.send_acl(behaviour, fwd, to_jid=settings.presenter_jid)
+            self.log("forwarded USER_MSG to Presenter")
+            return
 
             # Fallback: zachowanie jak dotąd – szybka, luźna propozycja
             offer = make_offer(conv_id, acl.ontology or "default")
@@ -256,8 +267,13 @@ class CoordinatorAgent(BaseAgent):
             self.log("sent OFFER in response to USER_MSG")
             return
 
+        # Forward rzeczy "dla użytkownika" do Bridge (to on gada z API)
+        if ptype in {"PRESENTER_REPLY", "TO_USER", "OFFER"}:
+            await self.send_acl(behaviour, acl, to_jid=settings.api_bridge_jid)
+            self.log(f"routed {ptype} to Bridge")
+            return
+        # ⬆⬆⬆ KONIEC WSTAWKI ⬆⬆⬆
 
-        
         if ptype == "METRICS_EXPORT":
             # Zrzut liczników do KB i potwierdzenie
             try:
