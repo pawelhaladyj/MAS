@@ -1,0 +1,1 @@
+sudo docker exec -it ejabberd /opt/ejabberd/bin/ejabberdctl register user xmpp.pawelhaladyj.pl pass
