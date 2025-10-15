@@ -32,7 +32,10 @@ NLU_CONF_MIN  = float(getattr(settings, "nlu_conf_min", os.getenv("NLU_CONF_MIN"
 class CoordinatorAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._acl_seen_keys = deque(maxlen=64)  # pamięć ostatnich kluczy
+        self._acl_seen_keys = deque(maxlen=64)
+        self._missing_cache: dict[str, tuple[frozenset[str], float]] = {}  # conv_id -> (missing, ts)
+        self._cap_cache: dict[str, tuple[str, float]] = {}  # cap_key -> (jid, expires_at)
+
     
     class OnACL(CyclicBehaviour):
         acl_handler_timeout = getattr(settings, "acl_handler_timeout", 0.2)
@@ -142,16 +145,9 @@ class CoordinatorAgent(BaseAgent):
                     )
                     await self.send_acl(behaviour, confirm, to_jid=str(spade_msg.sender))
 
-                # poproś o brakujące → do Presentera
+                # poproś o brakujące → do Presentera (z deduplikacją)
                 if missing:
-                    ask = AclMessage.build_request_ask(
-                        conversation_id=conv_id,
-                        need=missing,
-                        ontology=acl.ontology or "default",
-                    )
-                    await self.send_acl(behaviour, ask, to_jid=settings.presenter_jid)
-                    self.log(f"[NLU] asked for missing: {missing}")
-
+                    await self._ask_missing(behaviour, conv_id, missing, settings.presenter_jid)
                     # oraz krótka, ludzka dopowiedź od Presentera
                     await self._compose(behaviour, conv_id, payload.get("session_id") or conv_id, "followup")
 
@@ -284,6 +280,26 @@ class CoordinatorAgent(BaseAgent):
         # Inne typy — dyscyplina: tylko log.
         self.log(f"OTHER payload: {payload}")
 
+
+    async def _ask_missing(self, behaviour, conv_id: str, missing: list[str], to_jid: str):
+        now = time.time()
+        cur = frozenset(missing)
+        last = self._missing_cache.get(conv_id)
+        # jeśli te same braki w ostatnich 12s → pomiń
+        if last and last[0] == cur and (now - last[1]) < 12.0:
+            self.log(f"[NLU] missing unchanged, ASK skipped: {sorted(cur)}")
+            return
+        self._missing_cache[conv_id] = (cur, now)
+
+        ask = AclMessage.build_request_ask(
+            conversation_id=conv_id,
+            need=sorted(missing),
+            ontology="ui",
+        )
+        await self.send_acl(behaviour, ask, to_jid=to_jid)
+        self.log(f"[NLU] asked for missing: {sorted(missing)}")
+
+
     # --- Pomocnicze: oddaj niepowiązane wiadomości do głównego pipeline ---
     async def _dispatch_unrelated(self, behaviour, spade_msg):
         try:
@@ -307,7 +323,15 @@ class CoordinatorAgent(BaseAgent):
 
     # --- Registry lookup dla capability (np. nlu.SLOTS) ---
     async def _find_provider(self, behaviour, key: str) -> str | None:
-        conv = f"cap-{key.replace('.', '-')}-{int(time.time())}"
+        now = time.time()
+
+        # 1) Cache hit (pozytywny lub negatywny)
+        hit = self._cap_cache.get(key)  # (jid | None, expires_at)
+        if hit and hit[1] > now:
+            return hit[0] or None
+
+        # 2) Zapytanie do Registry
+        conv = f"cap-{key.replace('.', '-')}-{int(now)}"
         ask = AclMessage.build_request(
             conversation_id=conv,
             payload={"type": "ASK", "need": ["CAPABILITY", key]},
@@ -315,29 +339,63 @@ class CoordinatorAgent(BaseAgent):
         )
         to_registry = getattr(settings, "registry_jid", None) or os.getenv("REGISTRY_JID")
         if not to_registry:
-            self.log("[NLU] no REGISTRY_JID configured")
+            self.log(f"[CAP] no REGISTRY_JID configured for key='{key}'")
+            # Fallback: jeśli mamy stary (przeterminowany) hit, użyjemy go
+            if hit and hit[0]:
+                self.log(f"[CAP] using stale cached provider for {key}: {hit[0]}")
+                return hit[0]
+            # Specjalny fallback dla NLU
+            if key == NLU_CAP_KEY and getattr(settings, "extractor_jid", None):
+                return settings.extractor_jid
             return None
+
         await self.send_acl(behaviour, ask, to_jid=to_registry)
 
-        deadline = time.time() + 2.0
+        wait_s   = float(getattr(settings, "cap_cache_wait_s", 2.0))
+        deadline = now + wait_s
+        provider = None
+
         while time.time() < deadline:
             r = await behaviour.receive(timeout=0.25)
             if not r:
                 continue
             try:
                 data = json.loads(r.body or "{}")
-                acl = AclMessage.model_validate(data)
-                if acl.conversation_id != conv:
+                acl2 = AclMessage.model_validate(data)
+                if acl2.conversation_id != conv:
+                    # oddaj niepowiązane wiadomości do głównego pipeline
                     await self._dispatch_unrelated(behaviour, r)
                     continue
-                p = acl.payload or {}
+                p = acl2.payload or {}
                 if p.get("type") == "FACT" and p.get("slot") == "capability.providers":
                     providers = (p.get("value") or {}).get(key) or []
-                    return providers[0] if providers else None
+                    provider = providers[0] if providers else None
+                    break
             except Exception:
                 await self._dispatch_unrelated(behaviour, r)
                 continue
+
+        # 3) Aktualizacja cache (pozytywny/negatywny)
+        ttl     = float(getattr(settings, "cap_cache_ttl", 300.0))   # np. 5 min
+        neg_ttl = float(getattr(settings, "cap_neg_cache_ttl", 10.0))  # krótki backoff
+        expires = time.time() + (ttl if provider else neg_ttl)
+        self._cap_cache[key] = (provider, expires)
+
+        if provider:
+            self.log(f"[CAP] {key} -> {provider} (cached {int(ttl)}s)")
+            return provider
+
+        # 4) Fallbacki, jeśli nie udało się zdobyć providera
+        if hit and hit[0]:
+            self.log(f"[CAP] using stale cached provider for {key}: {hit[0]}")
+            return hit[0]
+
+        if key == NLU_CAP_KEY and getattr(settings, "extractor_jid", None):
+            self.log(f"[CAP] fallback to static extractor_jid for {key}")
+            return settings.extractor_jid
+
         return None
+
 
     # --- Prośba do Extractora i czekanie na odpowiedź ---
     async def _ask_extractor(

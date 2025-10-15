@@ -1,122 +1,104 @@
 # agents/api_bridge.py
-from __future__ import annotations
-
+import asyncio
 import json
-from typing import Optional
+from typing import Dict, Optional
+import contextlib
 
 from agents.agent import BaseAgent
 from agents.common.config import settings
-from agents.common.telemetry import log_acl_event
 from agents.protocol.acl_messages import AclMessage
-from agents.protocol.spade_utils import to_spade_message
+from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
-
 from spade.behaviour import CyclicBehaviour
 
-
 class ApiBridgeAgent(BaseAgent):
-    """
-    Minimalny mostek XMPP ↔ API.
-    - Uruchamiany przez FastAPI (lifespan) gdy API_BRIDGE_ENABLED=1.
-    - Czyta wpisy z asyncio.Queue (inbox) i forwarduje do Presentera.
-    - Odkłada odpowiedzi od agentów (np. PRESENTER_REPLY) do asyncio.Queue (outbox).
-    """
-
-    def __init__(self, *args, inbox, outbox, **kwargs):
+    def __init__(self, *args, inbox: asyncio.Queue, outbox: asyncio.Queue, **kwargs):
         super().__init__(*args, **kwargs)
-        self._inbox = inbox                      # asyncio.Queue → przychodzi z API
-        self._outbox = outbox                    # asyncio.Queue → wraca do API
-        self.default_target_jid = settings.coordinator_jid
+        self.inbox = inbox
+        self.outbox = outbox
+        # per-session „waiters” – HTTP będzie czekał na tę kolejkę
+        self._http_waiters: Dict[str, asyncio.Queue] = {}
+        self._http_buffer: Dict[str, dict] = {} 
 
-    class Inbox(BaseAgent.Inbox):
-        """Standardowy odbiornik ACL (gdyby ktoś pisał do mostka po XMPP)."""
-        pass
+    # === API dla HTTP ===
+    def register_waiter(self, session_id: str) -> asyncio.Queue:
+        q = asyncio.Queue(maxsize=1)
+        self._http_waiters[session_id] = q
 
-    class BridgePump(CyclicBehaviour):
-        """Pompa: czyta z kolejki HTTP → buduje ACL → wysyła do Presentera."""
+        # ⬅️ NOWE: jeśli przyszła już odpowiedź dla tej sesji, dostarcz ją natychmiast
+        pending = self._http_buffer.pop(session_id, None)
+        if pending is not None:
+            try:
+                q.put_nowait(pending)
+                self.log(f"[Bridge] delivered buffered reply to waiter for session='{session_id}'")
+            except asyncio.QueueFull:
+                pass
+
+        return q
+
+    async def send_user_msg(self, conversation_id: str, text: str, session_id: Optional[str] = None):
+        sess = session_id or conversation_id
+        acl = AclMessage.build_request_user_msg(
+            conversation_id=conversation_id,
+            text=text,
+            ontology="ui",
+            session_id=sess,
+        )
+        await self.send_acl(self._onacl_beh, acl, to_jid=settings.coordinator_jid)
+        self.log(f"[Bridge] USER_MSG → Coordinator conv='{conversation_id}' sess='{sess}'")
+
+    # wrzutki z HTTP (opcjonalnie, jeśli korzystasz z kolejki inbox)
+    class FromHttp(CyclicBehaviour):
         async def run(self):
-            item = None
-            try:
-                item = await self.agent._inbox.get()
-            except Exception:
-                return
-            if not item:
-                return
-
-            text: str = item.get("text", "")
-            conv: str = item.get("conversation_id") or "demo-1"
-            sess: str = item.get("session_id") or conv
-            to_jid: str = item.get("to_jid") or self.agent.default_target_jid
-            ontology: str = item.get("ontology") or "ui"
-
+            item = await self.agent.inbox.get()
+            conv = item["conversation_id"]
+            text = item["text"]
+            sess = item.get("session_id") or conv
             acl = AclMessage.build_request_user_msg(
-                conversation_id=conv,
-                text=text,
-                ontology=ontology,
-                session_id=sess,
+                conversation_id=conv, text=text, ontology="ui", session_id=sess
             )
+            await self.agent.send_acl(self, acl, to_jid=settings.coordinator_jid)
+            self.agent.log(f"[Bridge] USER_MSG from HTTP → Coordinator conv='{conv}'")
 
-            try:
-                log_acl_event(acl.conversation_id, "OUT", json.loads(acl.to_json()))
-            except Exception as e:
-                self.agent.log(f"[telemetry] OUT failed: {e}")
+    class OnACL(CyclicBehaviour):
+        acl_handler_timeout = 0.2
 
-            msg = to_spade_message(acl, to_jid=to_jid)
-            await self.send(msg)
-            self.agent.log(f"ACL OUT to={to_jid} payload={acl.payload}")
+        @acl_handler
+        async def run(self, acl: AclMessage, raw_msg):
+            if not acl_language_is_json(acl):
+                return
+            await self.agent.handle_acl(self, raw_msg, acl)
 
     async def setup(self):
-        self.add_behaviour(self.Inbox())
-        self.add_behaviour(self.BridgePump())
-        self.log("starting")
+        await super().setup()
+        # zachowaj referencję do OnACL, żeby send_user_msg mógł używać self._onacl_beh
+        self._onacl_beh = self.OnACL()
+        self.add_behaviour(self._onacl_beh)
+        self.add_behaviour(self.FromHttp())
 
-    # w agents/api_bridge.py (upewnij się, że na górze masz: from agents.common.config import settings)
+    async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+        payload = acl.payload or {}
+        ptype = payload.get("type")
 
-async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
-    payload = acl.payload or {}
-    ptype = payload.get("type")
+        if ptype in {"PRESENTER_REPLY", "TO_USER"}:
+            sess = payload.get("session_id") or acl.conversation_id
+            q = self._http_waiters.get(sess)
+            if q:
+                while not q.empty():
+                    with contextlib.suppress(Exception):
+                        q.get_nowait()
+                await q.put(payload)
+                with contextlib.suppress(Exception):
+                    del self._http_waiters[sess]
+                self.log(f"[Bridge] delivered {ptype} to HTTP waiter for session='{sess}'")
+            else:
+                # ⬅️ NOWE: brak waitera → zapamiętaj, żeby następny /chat dostał to od ręki
+                self._http_buffer[sess] = payload
+                self.log(f"[Bridge] buffered {ptype} for session='{sess}' (no waiter)")
+                # (opcjonalnie – zostawiasz jak było)
+                with contextlib.suppress(Exception):
+                    await self.outbox.put(payload)
+            return
 
-    # 0) twarda zasada: Bridge rozmawia tylko z Koordynatorem
-    sender_bare = str(spade_msg.sender).split("/", 1)[0]
-    if sender_bare != settings.coordinator_jid:
-        self.log(f"[bridge] drop frame from non-coordinator: {sender_bare}")
-        return
+        self.log(f"[Bridge] UNHANDLED ACL payload={payload}")
 
-    if not acl_language_is_json(acl):
-        return
-
-    # (opcjonalnie) zostaw PING/ACK — bywa przydatne przy healthcheckach
-    if ptype == "PING":
-        ack = AclMessage.build_inform_ack(
-            conversation_id=acl.conversation_id,
-            echo={"type": "PING"},
-        )
-        await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
-        self.log("acked PING")
-        return
-
-    if ptype == "ACK":
-        self.log(f"ACK: {payload}")
-        return
-
-    if ptype in {"PRESENTER_REPLY", "ASK", "OFFER", "CONFIRM", "ERROR"}:
-        try:
-            await self._outbox.put({
-                "conversation_id": acl.conversation_id,
-                "payload": payload,
-            })
-            self.log(f"[bridge] delivered to API outbox: {payload}")
-        except Exception as e:
-            self.log(f"[bridge] failed to put reply into outbox: {e}")
-        return
-
-
-    # 2) USER_MSG nie powinien przychodzić z Koordynatora do Bridge (to kierunek UI→Bridge)
-    #    więc tylko zaloguj:
-    if ptype == "USER_MSG":
-        txt = payload.get("text", "")
-        sess = payload.get("session_id")
-        self.log(f"[bridge] unexpected USER_MSG from coordinator: {txt!r} (session={sess})")
-        return
-
-    self.log(f"[bridge] OTHER payload from coordinator: {payload}")
