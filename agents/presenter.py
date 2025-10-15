@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 from collections import deque
+from datetime import datetime, timezone 
 
 from spade.behaviour import OneShotBehaviour, CyclicBehaviour 
 
@@ -56,6 +57,30 @@ class PresenterAgent(BaseAgent):
 
     async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
         
+        # --- thread vs conversation_id: strażnik spójności ---
+        thr = getattr(spade_msg, "thread", None)
+        if thr and thr != acl.conversation_id:
+            self.log(f"[warn] thread mismatch: thread={thr!r} != conv={acl.conversation_id!r}")
+        # --- koniec strażnika ---
+        
+        try:
+            sender = str(getattr(spade_msg, "sender", "")) or "?"
+            thr = getattr(spade_msg, "thread", None)
+            meta = getattr(spade_msg, "metadata", {}) or {}
+            stanza = getattr(spade_msg, "id", None) or meta.get("stanza_id")
+            ptype = (acl.payload or {}).get("type")
+            sess  = (acl.payload or {}).get("session_id")
+            self.log(
+                "WIRE dir=IN "
+                f"from={sender} "
+                f"perf={getattr(acl.performative, 'value', str(acl.performative))} type={ptype} "
+                f"conv={acl.conversation_id} sess={sess} "
+                f"thread={thr} stanza={stanza} "
+                f"ts={datetime.now(timezone.utc).isoformat()}"
+            )
+        except Exception:
+            pass
+        
         # --- filtr duplikatów (ostatnie 64 ramki) ---
         try:
             k = (
@@ -93,6 +118,48 @@ class PresenterAgent(BaseAgent):
         if ptype == "ASK":
             needs = payload.get("need") or []
             session_id = payload.get("session_id", os.getenv("CONV_ID", "demo-1"))
+            
+            # NOWE: FSM → GATHER (oczekujemy doprecyzowania od użytkownika)
+            try:
+                set_session_state(session_id, "GATHER")
+            except Exception as e:
+                self.log(f"[warn] failed to set FSM state to GATHER: {e}")
+                
+            # NOWE: DEMO_AUTOFILL – natychmiastowe FACT-y dla brakujących slotów (na potrzeby testów/demo)
+            try:
+                demo_on = getattr(settings, "presenter_demo_autofill", os.getenv("DEMO_AUTOFILL", "0") == "1")
+            except Exception:
+                demo_on = os.getenv("DEMO_AUTOFILL", "0") == "1"
+
+            if demo_on and needs:
+                def demo_value_for_slot(slot: str):
+                    return {
+                        "budget_total":        4000,
+                        "dates_start":         "2025-06-10",
+                        "nights":              7,
+                        "origin_city":         "Warszawa",
+                        "destination_pref":    "Grecja",
+                        "style":               "relaks",
+                        "weather_min_c":       24,
+                        "party_adults":        2,
+                        "party_children_ages": [12, 10],
+                    }.get(slot, "demo")
+
+                for s in needs:
+                    try:
+                        v = demo_value_for_slot(s)
+                        fact = AclMessage.build_inform_fact(
+                            conversation_id=acl.conversation_id,
+                            slot=s,
+                            value=v,
+                            ontology=acl.ontology or "travel",
+                        )
+                        # dla spójności routingu dołóż session_id w payload
+                        fact.payload["session_id"] = session_id
+                        await self.send_acl(behaviour, fact, to_jid=str(spade_msg.sender))
+                        self.log(f"[Presenter] DEMO FACT sent: {s}={v!r}")
+                    except Exception as e:
+                        self.log(f"[warn] DEMO FACT failed for slot={s}: {e}")
 
             # heurystyka: jeśli 1 slot → krótki prompt, jeśli wiele → lista pytań
             if len(needs) == 1:

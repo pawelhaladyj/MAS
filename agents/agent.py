@@ -2,13 +2,13 @@ import json
 
 import asyncio
 from typing import Optional
+from datetime import datetime, timezone
 
 from spade.agent import Agent
 from spade.behaviour import CyclicBehaviour
 from spade.message import Message
 
 from agents.protocol.acl_messages import AclMessage
-from agents.protocol.spade_utils import to_spade_message
 from agents.protocol.guards import meta_language_is_json, acl_language_is_json
 from agents.common.telemetry import log_acl_event
 from agents.common.metrics import inc
@@ -36,19 +36,64 @@ class BaseAgent(Agent):
     # ------------ logowanie ------------
     def log(self, msg: str):
         print(f"[{self.__class__.__name__}] {msg}")
+        
+    def wire_log(self, dir_: str, *, acl: AclMessage, to_jid: Optional[str]=None, spade_msg: Optional[Message]=None):
+        try:
+            from_jid = str(getattr(spade_msg, "sender", self.jid))
+            thr   = getattr(spade_msg, "thread", None) if spade_msg else None
+            meta  = getattr(spade_msg, "metadata", {}) or {}
+            stanza = getattr(spade_msg, "id", None) or meta.get("stanza_id")
+            ptype = (acl.payload or {}).get("type")
+            sess  = (acl.payload or {}).get("session_id")
+            self.log(
+                "WIRE "
+                f"dir={dir_} from={from_jid} to={to_jid or ''} "
+                f"perf={getattr(acl.performative,'value',str(acl.performative))} type={ptype} "
+                f"conv={acl.conversation_id} sess={sess} thread={thr} stanza={stanza} "
+                f"ts={datetime.now(timezone.utc).isoformat()}"
+            )
+        except Exception:
+            pass
+
 
     # ------------ ACL helpery ------------
     async def send_acl(self, behaviour, acl: AclMessage, to_jid: str) -> Message:
         """Zbuduj i wyślij SPADE Message z AclMessage (wysyłka przez Behaviour)."""
-        msg = to_spade_message(acl, to_jid=to_jid)
-        
-        # TELEMETRIA OUT
+
+        # 1) Budowa SPADE Message z gwarancją: thread == conversation_id
+        #    (używamy metody z AclMessage dodanej w poprzednim kroku)
+        msg = acl.to_spade_message(to=to_jid)
+
+        # 2) Pas bezpieczeństwa (nawet gdyby ktoś zbudował msg inną ścieżką):
+        if not getattr(msg, "thread", None):
+            msg.thread = acl.conversation_id
+        elif msg.thread != acl.conversation_id:
+            self.log(f"[warn] Overriding thread {msg.thread!r} -> {acl.conversation_id!r}")
+            msg.thread = acl.conversation_id
+
+        # 3) Krótka telemetria „przewozowa” — jednorodna
+        try:
+            pval = getattr(acl.performative, "value", str(acl.performative))
+            ptype = (acl.payload or {}).get("type")
+            sess  = (acl.payload or {}).get("session_id")
+            self.log(
+                "WIRE dir=OUT "
+                f"from={self.jid} to={to_jid} "
+                f"perf={pval} type={ptype} "
+                f"conv={acl.conversation_id} sess={sess} "
+                f"thread={getattr(msg, 'thread', None)} stanza=None "
+                f"ts={datetime.now(timezone.utc).isoformat()}"
+            )
+        except Exception:
+            pass
+
+        # 4) TELEMETRIA OUT (jak było)
         try:
             log_acl_event(acl.conversation_id, "OUT", json.loads(acl.to_json()))
         except Exception as e:
             self.log(f"[telemetry] OUT failed: {e}")
-        
-        # metrics OUT
+
+        # 5) METRYKI OUT (jak było)
         try:
             inc("acl_out_total", 1)
             p = getattr(acl, "performative", None)
@@ -61,14 +106,17 @@ class BaseAgent(Agent):
         except Exception:
             pass
 
+        # 6) Właściwa wysyłka
         await behaviour.send(msg)
-        # Loguj OUT
+
+        # 7) Log „po wysyłce” (jak było)
         try:
             dump = acl.model_dump()
         except AttributeError:
             dump = acl.dict()
         self.log(f"ACL OUT to={to_jid} payload={dump.get('payload')}")
         return msg
+
 
     def parse_acl(self, msg: Message) -> Optional[AclMessage]:
         """Wymuś JSON w meta + w obiekcie ACL, potem zwróć AclMessage albo None."""
@@ -78,17 +126,10 @@ class BaseAgent(Agent):
             return None
 
         try:
-            acl = AclMessage.from_json(msg.body)  # Pydantic v2
-        except AttributeError:
-            # Fallback dla Pydantic v1
-            import json as _json
-            try:
-                acl = AclMessage(**_json.loads(msg.body))
-            except Exception as e:
-                self.log(f"ERR invalid ACL (v1 fallback): {e}; body={msg.body!r}")
-                return None
+            # parser respektujący XMPP thread (dokładaliśmy go w AclMessage)
+            acl = AclMessage.from_spade_message(msg)
         except Exception as e:
-            self.log(f"ERR invalid ACL: {e}; body={msg.body!r}")
+            self.log(f"ERR invalid ACL (from_spade_message): {e}; body={getattr(msg,'body', '')!r}")
             return None
 
         if not acl_language_is_json(acl):
@@ -112,12 +153,23 @@ class BaseAgent(Agent):
             if not acl:
                 return
 
-            # Loguj IN (po udanym parsowaniu)
+            # WIRE IN (jednolinijkowy log do debugowania spójności)
             try:
-                dump = acl.model_dump()
-            except AttributeError:
-                dump = acl.dict()
-            self.agent.log(f"ACL IN from={str(msg.sender)} payload={dump.get('payload')}")
+                ptype = (acl.payload or {}).get("type")
+                sess  = (acl.payload or {}).get("session_id")
+                thr   = getattr(msg, "thread", None)
+                meta  = getattr(msg, "metadata", {}) or {}
+                stanza = getattr(msg, "id", None) or meta.get("stanza_id")
+                self.agent.log(
+                    "WIRE dir=IN "
+                    f"from={str(getattr(msg, 'sender', ''))} "
+                    f"perf={getattr(acl.performative,'value',str(acl.performative))} type={ptype} "
+                    f"conv={acl.conversation_id} sess={sess} thread={thr} stanza={stanza} "
+                    f"ts={datetime.now(timezone.utc).isoformat()}"
+                )
+            except Exception:
+                pass
+
 
             # przekaż referencję do aktywnego Behaviour
             await self.agent.handle_acl(self, msg, acl)

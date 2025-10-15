@@ -1,13 +1,16 @@
+import os
+import re
+from datetime import datetime
 import asyncio
 import json
-import os
 from collections import deque
 import time
 from typing import Any, Dict, List
 
-from agents.agent import BaseAgent
-from agents.common.kb import put_fact
+import ai.openai_client as ai_mod
 from agents.common.config import settings
+from agents.common.kb import put_fact
+from agents.agent import BaseAgent
 from agents.protocol.acl_messages import AclMessage
 from agents.protocol import acl_handler
 from agents.protocol.guards import acl_language_is_json
@@ -67,6 +70,25 @@ class CoordinatorAgent(BaseAgent):
         self.add_behaviour(self.OnACL())
     
     async def handle_acl(self, behaviour, spade_msg, acl: AclMessage):
+        
+        try:
+            sender = str(getattr(spade_msg, "sender", "")) or "?"
+            thr = getattr(spade_msg, "thread", None)
+            meta = getattr(spade_msg, "metadata", {}) or {}
+            stanza = getattr(spade_msg, "id", None) or meta.get("stanza_id")
+            ptype = (acl.payload or {}).get("type")
+            sess  = (acl.payload or {}).get("session_id")
+            self.log(
+                "WIRE dir=IN "
+                f"from={sender} "
+                f"perf={getattr(acl.performative, 'value', str(acl.performative))} type={ptype} "
+                f"conv={acl.conversation_id} sess={sess} "
+                f"thread={thr} stanza={stanza} "
+                f"ts={datetime.now(timezone.utc).isoformat()}"
+            )
+        except Exception:
+            pass
+        
         # --- filtr duplikatów (ostatnie 64 ramki) ---
         try:
             key = (
@@ -86,8 +108,9 @@ class CoordinatorAgent(BaseAgent):
         payload = acl.payload or {}
         ptype = payload.get("type")
 
-        # --- PING → ACK + delikatny COMPOSE:greeting do Presentera ---
+        # --- PING → ACK + OFFER (AI lub fallback) ---
         if ptype == "PING":
+            # ACK (może zostać)
             ack = AclMessage.build_inform_ack(
                 conversation_id=acl.conversation_id,
                 echo={"type": "PING"},
@@ -95,9 +118,55 @@ class CoordinatorAgent(BaseAgent):
             await self.send_acl(behaviour, ack, to_jid=str(spade_msg.sender))
             self.log("acked PING")
 
-            # zamiast hardkodowanego OFFER → poproś Presentera o krótką wiadomość powitalną
-            # await self._compose(behaviour, acl.conversation_id, payload.get("session_id") or acl.conversation_id, "greeting")
+            session_id = payload.get("session_id") or acl.conversation_id
+
+            # AI włączone, gdy AI_ENABLED=1 LUB ustawienie w settings
+            ai_enabled = (os.getenv("AI_ENABLED", "0") == "1") or getattr(settings, "coordinator_ai_enabled", False)
+
+            # Pobierz tekst od AI (jeśli włączone)
+            ai_text = None
+            if ai_enabled:
+                try:
+                    sys = "Jesteś zwięzłym doradcą podróży. Jedno zdanie, po polsku."
+                    usr = "Utwórz startową propozycję na powitanie nowej rozmowy."
+                    maybe = ai_mod.chat_reply(sys, usr)  # <- przez moduł, działa z monkeypatch
+                    if maybe:
+                        ai_text = maybe.strip()
+                except Exception as e:
+                    self.log(f"[warn] AI headline/notes failed: {e}")
+
+            # Nagłówek stały/konfigurowalny
+            headline = getattr(
+                settings,
+                "coordinator_offer_headline_default",
+                "Mam dla Ciebie wstępną propozycję podróży."
+            )
+
+            # KLUCZ: notatki = AI (jeśli jest), inaczej fallback
+            notes = ai_text if ai_text else getattr(
+                settings,
+                "coordinator_offer_notes_default",
+                "Luźna podpowiedź — możemy iść w inną stronę, jeśli wolisz."
+            )
+
+            # Budowa OFERTY z notes
+            offer_payload = {
+                "type": "OFFER",
+                "proposal": {"headline": headline, "notes": notes},
+                "session_id": session_id,
+            }
+
+            reply = AclMessage.build_inform(
+                conversation_id=acl.conversation_id,
+                payload=offer_payload,
+                ontology=acl.ontology or "ui",
+            )
+            await self.send_acl(behaviour, reply, to_jid=str(spade_msg.sender))
+            self.log(f"[Coordinator] sent OFFER (notes): {notes}")
             return
+            # --- /PING ---
+
+
 
         # --- FACT ---
         if ptype == "FACT":

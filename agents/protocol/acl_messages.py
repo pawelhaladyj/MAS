@@ -4,6 +4,10 @@ from enum import Enum
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timezone
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Performative(str, Enum):
@@ -122,6 +126,55 @@ class AclMessage(BaseModel):
     @classmethod
     def from_json(cls, data: str) -> "AclMessage":
         return cls.model_validate_json(data)
+
+    # ===== Integracja ze SPADE (wymuszenie XMPP thread == conversation_id) =====
+    def to_spade_message(self, to: str):
+        """Zbuduj SPADE Message z gwarancją: msg.thread == conversation_id."""
+        from spade.message import Message  # lokalny import, by nie psuć importów tam, gdzie SPADE nie jest potrzebny
+
+        msg = Message(to=to)
+        # Metadane pomocnicze (nie zastępują body, ale ułatwiają debug)
+        msg.set_metadata("performative", self.performative.value)
+        msg.set_metadata("ontology", self.ontology)
+        msg.set_metadata("language", self.language)
+        msg.set_metadata("conversation_id", self.conversation_id)
+
+        # KLUCZ: XMPP thread == conversation_id
+        msg.thread = self.conversation_id
+
+        # Treść: pełny JSON AclMessage
+        msg.body = self.model_dump_json()
+        return msg
+
+    @classmethod
+    def from_spade_message(cls, msg):
+        """Odtwórz AclMessage ze SPADE Message, respektując thread jako conversation_id."""
+        try:
+            data = json.loads(getattr(msg, "body", "") or "{}")
+        except Exception as e:
+            raise ValueError(f"Invalid JSON body in SPADE Message: {e}")
+
+        # Ustal conversation_id: najpierw z body, jeśli brak — z thread
+        conv = data.get("conversation_id") or getattr(msg, "thread", None)
+        if not conv:
+            raise ValueError("Missing conversation_id (and XMPP thread)")
+
+        # Ostrzeż, jeśli body i thread się rozjeżdżają
+        thr = getattr(msg, "thread", None)
+        if thr and thr != conv:
+            logger.warning("Thread != conversation_id (thread=%s, conv=%s)", thr, conv)
+
+        data["conversation_id"] = conv
+
+        # Uzupełnij pola z metadanych SPADE (gdy nieobecne w body)
+        meta = getattr(msg, "metadata", {}) or {}
+        data.setdefault("ontology", meta.get("ontology", "default"))
+        data.setdefault("language", meta.get("language", "json"))
+        if "performative" not in data and meta.get("performative"):
+            data["performative"] = meta["performative"]
+
+        # Pydantic zrzutuje string -> Enum Performative
+        return cls(**data)
 
     # ===== Dodatkowe fabryki używane w projekcie =====
 
