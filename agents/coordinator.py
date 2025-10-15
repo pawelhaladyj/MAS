@@ -35,6 +35,8 @@ class CoordinatorAgent(BaseAgent):
         self._acl_seen_keys = deque(maxlen=64)
         self._missing_cache: dict[str, tuple[frozenset[str], float]] = {}  # conv_id -> (missing, ts)
         self._cap_cache: dict[str, tuple[str, float]] = {}  # cap_key -> (jid, expires_at)
+        self._root_session: dict[str, str] = {}
+
 
     
     class OnACL(CyclicBehaviour):
@@ -47,6 +49,18 @@ class CoordinatorAgent(BaseAgent):
             if not acl_language_is_json(acl):
                 return
             await self.agent.handle_acl(self, raw_msg, acl)
+            
+    def _get_session(self, conv_id: str) -> str | None:
+        # bezpośrednie trafienie
+        sid = self._root_session.get(conv_id)
+        if sid:
+            return sid
+        # jeśli to techniczny conv z sufiksem (np. "-nlu"), spróbuj bazowego
+        if conv_id.endswith("-nlu"):
+            base = conv_id[:-4]
+            return self._root_session.get(base)
+        return None
+
             
     async def setup(self):
         await super().setup()
@@ -82,7 +96,7 @@ class CoordinatorAgent(BaseAgent):
             self.log("acked PING")
 
             # zamiast hardkodowanego OFFER → poproś Presentera o krótką wiadomość powitalną
-            await self._compose(behaviour, acl.conversation_id, payload.get("session_id") or acl.conversation_id, "greeting")
+            # await self._compose(behaviour, acl.conversation_id, payload.get("session_id") or acl.conversation_id, "greeting")
             return
 
         # --- FACT ---
@@ -149,11 +163,12 @@ class CoordinatorAgent(BaseAgent):
                 if missing:
                     await self._ask_missing(behaviour, conv_id, missing, settings.presenter_jid)
                     # oraz krótka, ludzka dopowiedź od Presentera
-                    await self._compose(behaviour, conv_id, payload.get("session_id") or conv_id, "followup")
+                    await self._compose(behaviour, conv_id, "followup")
 
                 # jeśli coś potwierdziliśmy, poproś Presentera o miękki hint
                 if confirmed and not missing:
-                    await self._compose(behaviour, conv_id, payload.get("session_id") or conv_id, "offer_hint")
+                    await self._compose(behaviour, conv_id, "offer_hint")
+
 
                 return
 
@@ -205,7 +220,7 @@ class CoordinatorAgent(BaseAgent):
                 self.log(f"confirmed FACT for slot='{slot}'")
                 
                 # delikatny hint zamiast sztywnego OFFER
-                await self._compose(behaviour, conv_id, payload.get("session_id") or conv_id, "offer_hint")
+                await self._compose(behaviour, conv_id, "offer_hint")
                 return
 
             except Exception as e:
@@ -217,6 +232,9 @@ class CoordinatorAgent(BaseAgent):
             conv_id = acl.conversation_id
             text = (payload or {}).get("text", "")
             session_id = payload.get("session_id") or conv_id
+            # zapamiętaj prawdę o sesji dla głównego conv_id
+            if session_id:
+                self._root_session[conv_id] = session_id
 
             try:
                 put_fact(conv_id, "last_user_msg", {"value": text, "source": "user"})
@@ -309,16 +327,20 @@ class CoordinatorAgent(BaseAgent):
         except Exception:
             pass
 
-    # --- COMPOSE: prosimy Presentera o krótką wypowiedź do użytkownika ---
-    async def _compose(self, behaviour, conv_id: str, session_id: str, purpose: str, ontology: str = "ui"):
-        # ZAMIANA: zamiast payload.type="COMPOSE", używamy REQUEST/ASK
+    # --- COMPOSE: wyjście do UI zawsze z niezmiennym session_id ---
+    async def _compose(self, behaviour, conv_id: str, purpose: str, ontology: str = "ui"):
+        sid = self._get_session(conv_id)
+        if not sid:
+            self.log(f"[UI] no session for conv='{conv_id}', skip COMPOSE({purpose})")
+            return
         compose = AclMessage.build_request(
             conversation_id=conv_id,
-            payload={"type": "ASK", "need": ["COMPOSE", purpose], "session_id": session_id},
+            payload={"type": "ASK", "need": ["COMPOSE", purpose], "session_id": sid},
             ontology=ontology,
         )
         await self.send_acl(behaviour, compose, to_jid=settings.presenter_jid)
-        self.log(f"requested COMPOSE({purpose}) from Presenter")
+        self.log(f"requested COMPOSE({purpose}) from Presenter (sid='{sid}')")
+
 
 
     # --- Registry lookup dla capability (np. nlu.SLOTS) ---
@@ -408,13 +430,33 @@ class CoordinatorAgent(BaseAgent):
         context: str,
         wanted: List[str],
     ) -> Dict[str, Any] | None:
+        # --- ustal bazową sesję dla wątku (niezmienną w całym dialogu) ---
+        # jeśli nie ma mapy, załóż ją
+        if not hasattr(self, "_root_session"):
+            self._root_session: Dict[str, str] = {}
+
+        base_sess = self._root_session.get(conv_id) or session_id
+        nlu_conv  = f"{conv_id}-nlu"
+
+        # zmapuj techniczny conv '-nlu' na tę samą, bazową sesję
+        self._root_session[nlu_conv] = base_sess
+
+        # --- wyślij prośbę do Extractora dla technicznego conv_id ---
         req = AclMessage.build_request(
-            conversation_id=f"{conv_id}-nlu",
-            payload={"type": "ASK", "need": ["EXTRACT", *wanted], "text": text, "context": context, "session_id": session_id},
+            conversation_id=nlu_conv,
+            payload={
+                "type": "ASK",
+                "need": ["EXTRACT", *wanted],
+                "text": text,
+                "context": context,
+                # Krytyczne: nie propagujemy żadnych pochodnych; zawsze bazowy session_id
+                "session_id": base_sess,
+            },
             ontology=NLU_ONTOLOGY,
         )
         await self.send_acl(behaviour, req, to_jid=extractor_jid)
 
+        # --- poczekaj na odpowiedź tylko dla tego conv_id ---
         deadline = time.time() + 3.0
         while time.time() < deadline:
             r = await behaviour.receive(timeout=0.25)
@@ -422,30 +464,19 @@ class CoordinatorAgent(BaseAgent):
                 continue
             try:
                 data = json.loads(r.body or "{}")
-                acl = AclMessage.model_validate(data)
-                if acl.conversation_id != req.conversation_id:
+                acl2 = AclMessage.model_validate(data)
+                if acl2.conversation_id != nlu_conv:
+                    # wszystko inne oddaj normalnemu pipeline
                     await self._dispatch_unrelated(behaviour, r)
                     continue
-                p = acl.payload or {}
+                p = acl2.payload or {}
                 if p.get("type") == "FACT" and p.get("slot") == "nlu.extraction":
                     return p.get("value") or {}
             except Exception:
                 await self._dispatch_unrelated(behaviour, r)
                 continue
         return None
-
-
-async def main():
-    a = CoordinatorAgent(
-        jid=settings.coordinator_jid,
-        password=settings.coordinator_pass,
-        verify_security=settings.verify_security,
-        # server=settings.xmpp_host,
-        # port=settings.xmpp_port,
-    )
-    a.write_kb_health()
-    await BaseAgent.run_forever(a)
-    
+        
 
 if __name__ == "__main__":
     asyncio.run(main())
