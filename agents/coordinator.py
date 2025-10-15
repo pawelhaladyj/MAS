@@ -309,13 +309,18 @@ class CoordinatorAgent(BaseAgent):
             return
         self._missing_cache[conv_id] = (cur, now)
 
-        ask = AclMessage.build_request_ask(
+        sid = self._get_session(conv_id)
+        if not sid:
+            self.log(f"[NLU] skip ASK missing; no session for conv='{conv_id}'")
+            return
+
+        ask = AclMessage.build_request(
             conversation_id=conv_id,
-            need=sorted(missing),
+            payload={"type": "ASK", "need": sorted(missing), "session_id": sid},
             ontology="ui",
         )
         await self.send_acl(behaviour, ask, to_jid=to_jid)
-        self.log(f"[NLU] asked for missing: {sorted(missing)}")
+        self.log(f"[NLU] asked for missing: {sorted(missing)} (sid='{sid}')")
 
 
     # --- Pomocnicze: oddaj niepowiązane wiadomości do głównego pipeline ---
